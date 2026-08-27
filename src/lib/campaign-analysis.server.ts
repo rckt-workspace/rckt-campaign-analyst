@@ -196,5 +196,6 @@ export async function requestCampaignAnalysis(
     signal,
   );
 
-  return (isParseable(retry.text) ? retry.text : first.text).trim();
+  const retryText = sanitize(retry.text);
+  return isParseable(retryText) ? retryText : firstText;
 }
