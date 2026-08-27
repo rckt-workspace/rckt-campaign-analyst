@@ -154,6 +154,12 @@ export function buildUserMessage(data: NormalizedCampaign): string {
 
 const REQUIRED_HEADING = "## Estado general";
 
+/** Elimina cualquier preámbulo del modelo antes del primer encabezado esperado. */
+function sanitize(text: string): string {
+  const index = text.indexOf(REQUIRED_HEADING);
+  return (index > 0 ? text.slice(index) : text).trim();
+}
+
 /** Verifica que la respuesta sea mapeable al contrato esperado por el frontend. */
 function isParseable(text: string): boolean {
   return text.includes(REQUIRED_HEADING) && text.includes("## Resumen ejecutivo");
@@ -171,7 +177,9 @@ export async function requestCampaignAnalysis(
   ];
 
   const first = await runChatCompletion(messages, signal);
-  if (isParseable(first.text)) return first.text.trim();
+  const firstText = sanitize(first.text);
+  if (isParseable(firstText)) return firstText;
+
 
   // Única estrategia de recuperación: repetir exigiendo el formato exacto.
   console.warn(`OpenRouter unparseable response model=${first.model}; retrying with format guard`);
