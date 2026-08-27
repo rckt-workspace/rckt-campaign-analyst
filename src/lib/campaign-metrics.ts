@@ -42,7 +42,25 @@ export type NormalizedCampaign = {
   roas: number | null;
   additionalContext: string | null;
   rawInput: string;
+  /** Valores del periodo anterior, cuando el usuario los suministra. */
+  previous: PreviousMetrics;
 };
+
+export type MetricKey =
+  | "investment"
+  | "impressions"
+  | "reach"
+  | "frequency"
+  | "clicks"
+  | "ctr"
+  | "cpc"
+  | "leads"
+  | "cpl"
+  | "conversions"
+  | "revenue"
+  | "roas";
+
+export type PreviousMetrics = Partial<Record<MetricKey, number | undefined>>;
 
 export const EMPTY_FORM: CampaignFormFields = {
   campaign: "",
@@ -174,7 +192,7 @@ const trimOrNull = (value: string) => {
 
 const numOrNull = (value: string) => (value.trim() ? parseLocaleNumber(value) : null);
 
-const LABELS: Record<keyof Omit<NormalizedCampaign, "rawInput">, string[]> = {
+const LABELS: Record<Exclude<keyof NormalizedCampaign, "rawInput" | "previous">, string[]> = {
   campaign: ["campaña", "campana", "campaign", "nombre de campaña"],
   channel: ["canal", "channel", "plataforma"],
   objective: ["objetivo", "objective", "meta"],
@@ -196,20 +214,50 @@ const LABELS: Record<keyof Omit<NormalizedCampaign, "rawInput">, string[]> = {
 
 const TEXT_KEYS = ["campaign", "channel", "objective", "period"] as const;
 
+const PREVIOUS_MARKER = /(periodo|período)\s+(anterior|previo)/i;
+const PREVIOUS_SUFFIX = /\b(anterior|previo|previous|pasado)\b/i;
+
 function parseRawInput(raw: string): Partial<NormalizedCampaign> {
   const result: Partial<NormalizedCampaign> = {};
+  const previous: PreviousMetrics = {};
   const lines = raw.split(/\r?\n/);
   const extraLines: string[] = [];
   let inAdditional = false;
+  let previousBlock = false;
 
   for (const line of lines) {
     const match = line.match(/^\s*([^:]{1,60}?)\s*:\s*(.*)$/);
     if (!match) {
+      if (PREVIOUS_MARKER.test(line)) {
+        previousBlock = true;
+        inAdditional = false;
+        continue;
+      }
       if (inAdditional && line.trim()) extraLines.push(line.trim());
       continue;
     }
     const label = (match[1] ?? "").trim().toLowerCase();
     const value = (match[2] ?? "").trim();
+
+    // "Periodo anterior:" abre el bloque histórico.
+    if (PREVIOUS_MARKER.test(label)) {
+      previousBlock = true;
+      inAdditional = false;
+      continue;
+    }
+
+    const isPreviousMetric = PREVIOUS_SUFFIX.test(label);
+    if (isPreviousMetric || previousBlock) {
+      const cleanLabel = label.replace(PREVIOUS_SUFFIX, "").replace(/\s+/g, " ").trim();
+      const key = matchMetricKey(cleanLabel);
+      if (key) {
+        const parsed = parseLocaleNumber(value);
+        if (parsed !== null && previous[key] === undefined) previous[key] = parsed;
+        inAdditional = false;
+        continue;
+      }
+      if (isPreviousMetric) continue;
+    }
 
     if (LABELS.additionalContext.includes(label)) {
       inAdditional = true;
@@ -242,7 +290,30 @@ function parseRawInput(raw: string): Partial<NormalizedCampaign> {
   }
 
   if (extraLines.length) result.additionalContext = extraLines.join("\n");
+  if (Object.keys(previous).length) result.previous = previous;
   return result;
+}
+
+const METRIC_KEYS = [
+  "investment",
+  "impressions",
+  "reach",
+  "frequency",
+  "clicks",
+  "ctr",
+  "cpc",
+  "leads",
+  "cpl",
+  "conversions",
+  "revenue",
+  "roas",
+] as const;
+
+function matchMetricKey(label: string): MetricKey | null {
+  for (const key of METRIC_KEYS) {
+    if (LABELS[key].some((alias) => label === alias || label.startsWith(`${alias} `))) return key;
+  }
+  return null;
 }
 
 export function normalizeCampaign(
@@ -269,6 +340,7 @@ export function normalizeCampaign(
     roas: null,
     additionalContext: null,
     rawInput: "",
+    previous: {},
   };
 
   if (mode === "paste") {
@@ -306,7 +378,7 @@ export function normalizeCampaign(
 /** Cantidad de campos con información útil (excluye rawInput). */
 export function countFilledFields(data: NormalizedCampaign): number {
   return Object.entries(data).filter(
-    ([key, value]) => key !== "rawInput" && value !== null && value !== "",
+    ([key, value]) => key !== "rawInput" && key !== "previous" && value !== null && value !== "",
   ).length;
 }
 

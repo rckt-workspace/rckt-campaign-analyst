@@ -48,13 +48,12 @@ export function CampaignInputPanel({
   const [emptyNotice, setEmptyNotice] = useState(false);
   const [prepared, setPrepared] = useState<NormalizedCampaign | null>(null);
 
-  const normalized = useMemo(
-    () => normalizeCampaign(mode, rawValue, form),
-    [mode, rawValue, form],
-  );
+  const normalized = useMemo(() => normalizeCampaign(mode, rawValue, form), [mode, rawValue, form]);
   const empty = isEmptyInput(mode, rawValue, form);
   const filled = countFilledFields(normalized);
-  const canAnalyze = !empty && filled >= 2;
+  // En texto libre basta un input con contenido suficiente aunque no venga etiquetado.
+  const freeText = mode === "paste" && rawValue.trim().length >= 40;
+  const canAnalyze = !empty && (filled >= 2 || freeText);
   const scarce = !empty && filled > 0 && filled < 5;
 
   const handleFormChange = (key: keyof CampaignFormFields, value: string) => {

@@ -23,6 +23,22 @@ const payloadSchema = z.object({
   roas: numeric,
   additionalContext: z.string().max(4000).nullable(),
   rawInput: z.string().max(12000),
+  previous: z
+    .object({
+      investment: z.number().finite().optional(),
+      impressions: z.number().finite().optional(),
+      reach: z.number().finite().optional(),
+      frequency: z.number().finite().optional(),
+      clicks: z.number().finite().optional(),
+      ctr: z.number().finite().optional(),
+      cpc: z.number().finite().optional(),
+      leads: z.number().finite().optional(),
+      cpl: z.number().finite().optional(),
+      conversions: z.number().finite().optional(),
+      revenue: z.number().finite().optional(),
+      roas: z.number().finite().optional(),
+    })
+    .default({}),
 });
 
 export const analyzeCampaign = createServerFn({ method: "POST" })
