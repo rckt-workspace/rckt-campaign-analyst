@@ -51,7 +51,12 @@ async function callModel(
       console.error(
         `OpenRouter request failed model=${model} status=${response.status} ms=${Date.now() - startedAt} detail=${detail.slice(0, 300)}`,
       );
-      if (RECOVERABLE_STATUS.has(response.status) || response.status === 404) {
+      // 404 y 400 de "modelo inválido/no disponible" se tratan como recuperables
+      // para permitir el único intento con el modelo de fallback.
+      const modelUnavailable =
+        response.status === 404 ||
+        (response.status === 400 && /valid model|model.*(not found|unavailable)/i.test(detail));
+      if (RECOVERABLE_STATUS.has(response.status) || modelUnavailable) {
         throw new RecoverableAiError(`AI_${response.status}`);
       }
       throw new Error(`AI_${response.status}`);
