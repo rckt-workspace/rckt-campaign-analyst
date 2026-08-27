@@ -1,7 +1,26 @@
-import { useState } from "react";
-import { ClipboardList, FileText, FlaskConical, Wand2 } from "lucide-react";
+import { useMemo, useState } from "react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  ClipboardList,
+  FileText,
+  FlaskConical,
+  Info,
+  Wand2,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { QuickForm } from "@/components/campaign/QuickForm";
+import {
+  EMPTY_FORM,
+  EXAMPLE_FORM,
+  EXAMPLE_RAW,
+  countFilledFields,
+  isEmptyInput,
+  normalizeCampaign,
+  type CampaignFormFields,
+  type NormalizedCampaign,
+} from "@/lib/campaign-metrics";
 
 const PLACEHOLDER = `Campaña: Lanzamiento Producto X
 Canal: Meta Ads
@@ -17,10 +36,45 @@ type InputMode = "paste" | "form";
 
 export function CampaignInputPanel() {
   const [mode, setMode] = useState<InputMode>("paste");
-  const [value, setValue] = useState("");
+  const [rawValue, setRawValue] = useState("");
+  const [form, setForm] = useState<CampaignFormFields>(EMPTY_FORM);
+  const [emptyNotice, setEmptyNotice] = useState(false);
+  const [prepared, setPrepared] = useState<NormalizedCampaign | null>(null);
+
+  const normalized = useMemo(
+    () => normalizeCampaign(mode, rawValue, form),
+    [mode, rawValue, form],
+  );
+  const empty = isEmptyInput(mode, rawValue, form);
+  const filled = countFilledFields(normalized);
+  const canAnalyze = !empty && filled >= 2;
+  const scarce = !empty && filled > 0 && filled < 5;
+
+  const handleFormChange = (key: keyof CampaignFormFields, value: string) => {
+    setForm((prev) => ({ ...prev, [key]: value }));
+    setEmptyNotice(false);
+    setPrepared(null);
+  };
+
+  const loadExample = () => {
+    setRawValue(EXAMPLE_RAW);
+    setForm(EXAMPLE_FORM);
+    setEmptyNotice(false);
+    setPrepared(null);
+  };
+
+  const handleAnalyze = () => {
+    if (empty) {
+      setEmptyNotice(true);
+      setPrepared(null);
+      return;
+    }
+    setEmptyNotice(false);
+    setPrepared(normalized);
+  };
 
   return (
-    <section className="panel flex flex-col p-5 md:p-6">
+    <section className="panel flex min-w-0 flex-col p-5 md:p-6">
       <div className="flex items-start gap-3">
         <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-border bg-surface-elevated">
           <ClipboardList className="h-4 w-4 text-primary" aria-hidden="true" />
@@ -57,41 +111,92 @@ export function CampaignInputPanel() {
       {mode === "paste" ? (
         <div className="mt-5">
           <Textarea
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
+            value={rawValue}
+            onChange={(event) => {
+              setRawValue(event.target.value);
+              setEmptyNotice(false);
+              setPrepared(null);
+            }}
             placeholder={PLACEHOLDER}
             aria-label="Métricas de campaña"
-            className="min-h-[300px] resize-y rounded-xl border-border bg-background/60 font-mono text-[13px] leading-relaxed transition-colors duration-200 placeholder:text-muted-foreground/60 focus-visible:border-primary md:min-h-[340px]"
+            className="min-h-[300px] w-full resize-y rounded-xl border-border bg-background/60 font-mono text-[13px] leading-relaxed transition-colors duration-200 placeholder:text-muted-foreground/60 focus-visible:border-primary md:min-h-[340px]"
           />
         </div>
       ) : (
-        <div className="mt-5 grid min-h-[300px] place-items-center rounded-xl border border-dashed border-border bg-background/40 px-6 text-center md:min-h-[340px]">
-          <div>
-            <p className="text-sm font-medium text-foreground">Formulario rápido</p>
-            <p className="mt-1.5 max-w-sm text-sm text-muted-foreground">
-              Aquí podrás capturar cada métrica en campos individuales.
-            </p>
-          </div>
+        <div className="mt-5">
+          <QuickForm values={form} onChange={handleFormChange} />
         </div>
       )}
 
+      <div aria-live="polite" className="mt-4 flex flex-col gap-2 empty:mt-0">
+        {emptyNotice ? (
+          <Notice
+            tone="warn"
+            icon={<AlertCircle className="h-4 w-4" aria-hidden="true" />}
+            text="Agrega algunas métricas para comenzar el análisis."
+          />
+        ) : null}
+        {scarce ? (
+          <Notice
+            tone="info"
+            icon={<Info className="h-4 w-4" aria-hidden="true" />}
+            text="Con más métricas podremos generar un análisis más completo."
+          />
+        ) : null}
+        {prepared ? (
+          <Notice
+            tone="ok"
+            icon={<CheckCircle2 className="h-4 w-4" aria-hidden="true" />}
+            text={`Datos preparados: ${filled} campos reconocidos y normalizados. El análisis se habilitará en la siguiente etapa.`}
+          />
+        ) : null}
+      </div>
+
       <div className="mt-5 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
         <Button
+          type="button"
           variant="outline"
-          disabled
-          className="justify-center gap-2 rounded-xl border-border bg-surface-elevated text-muted-foreground"
+          onClick={loadExample}
+          className="justify-center gap-2 rounded-xl border-border bg-surface-elevated text-foreground transition-colors duration-200 hover:border-primary/50"
         >
-          <FlaskConical className="h-4 w-4" aria-hidden="true" />
+          <FlaskConical className="h-4 w-4 text-primary" aria-hidden="true" />
           Cargar ejemplo
         </Button>
         <Button
-          disabled
+          type="button"
+          onClick={handleAnalyze}
+          disabled={!canAnalyze}
           className="justify-center rounded-xl px-6 transition-colors duration-200"
         >
           Analizar campaña
         </Button>
       </div>
     </section>
+  );
+}
+
+function Notice({
+  tone,
+  icon,
+  text,
+}: {
+  tone: "warn" | "info" | "ok";
+  icon: React.ReactNode;
+  text: string;
+}) {
+  const tones = {
+    warn: "border-destructive/40 bg-destructive/10 text-foreground [&>svg]:text-destructive",
+    info: "border-border bg-surface-elevated text-muted-foreground [&>svg]:text-primary",
+    ok: "border-primary/40 bg-primary/10 text-foreground [&>svg]:text-primary",
+  } as const;
+
+  return (
+    <div
+      className={`flex items-start gap-2.5 rounded-lg border px-3.5 py-2.5 text-sm ${tones[tone]}`}
+    >
+      <span className="mt-0.5 shrink-0">{icon}</span>
+      <p className="min-w-0">{text}</p>
+    </div>
   );
 }
 
