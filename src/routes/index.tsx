@@ -1,8 +1,15 @@
+import { useCallback, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
 import { AppHeader } from "@/components/campaign/AppHeader";
 import { HeroIntro } from "@/components/campaign/HeroIntro";
 import { CampaignInputPanel } from "@/components/campaign/CampaignInputPanel";
-import { ExecutiveReportPanel } from "@/components/campaign/ExecutiveReportPanel";
+import {
+  ExecutiveReportPanel,
+  type AnalysisStatus,
+} from "@/components/campaign/ExecutiveReportPanel";
+import { analyzeCampaign } from "@/lib/campaign-analysis.functions";
+import type { NormalizedCampaign } from "@/lib/campaign-metrics";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -27,14 +34,48 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
+  const runAnalysis = useServerFn(analyzeCampaign);
+  const [status, setStatus] = useState<AnalysisStatus>("idle");
+  const [analysis, setAnalysis] = useState<string | null>(null);
+  const lastPayload = useRef<NormalizedCampaign | null>(null);
+  const inFlight = useRef(false);
+
+  const analyze = useCallback(
+    async (data: NormalizedCampaign) => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      lastPayload.current = data;
+      setStatus("loading");
+      setAnalysis(null);
+      try {
+        const result = await runAnalysis({ data });
+        setAnalysis(result.analysis);
+        setStatus("success");
+      } catch (error) {
+        console.error("Fallo el análisis de campaña", error);
+        setStatus("error");
+      } finally {
+        inFlight.current = false;
+      }
+    },
+    [runAnalysis],
+  );
+
+  const retry = useCallback(() => {
+    if (lastPayload.current) void analyze(lastPayload.current);
+  }, [analyze]);
+
   return (
     <div className="min-h-screen bg-background">
       <AppHeader />
       <main className="pb-16">
         <HeroIntro />
         <div className="mx-auto grid max-w-7xl gap-5 px-5 md:px-8 lg:grid-cols-2 lg:gap-6">
-          <CampaignInputPanel />
-          <ExecutiveReportPanel />
+          <CampaignInputPanel
+            isAnalyzing={status === "loading"}
+            onAnalyze={(data) => void analyze(data)}
+          />
+          <ExecutiveReportPanel status={status} analysis={analysis} onRetry={retry} />
         </div>
       </main>
     </div>
