@@ -1,29 +1,29 @@
-# Welcome to your Lovable project
+# RCKT Campaign Analyst
 
-This project was built with [Lovable](https://lovable.dev).
+RCKT Campaign Analyst es una herramienta de inteligencia artificial diseñada para transformar métricas de campañas digitales en análisis ejecutivos comprensibles y accionables.
 
-## Build with Lovable
+## Objetivo
 
-Open your project in the [Lovable editor](https://lovable.dev) and keep building.
+El usuario ingresa resultados de campaña (texto libre o formulario rápido) y obtiene:
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: connect the project to GitHub and every change made in Lovable is committed straight to your repository.
-- **Full ownership**: this code is yours. Push to your repository and your changes sync back into Lovable, ready for your next prompt.
+- estado general;
+- resumen ejecutivo;
+- principales hallazgos;
+- recomendaciones;
+- información faltante;
+- advertencias de consistencia.
 
-## Development
+## Stack
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+- Lovable
+- Lovable Cloud
+- Lovable AI
+- GitHub
 
-```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
-```
+## Arquitectura
 
-## Built with
+Single Agent Architecture: un único agente especializado ("Analista IA de Campañas") interpreta las métricas suministradas.
 
-- TanStack Start
-- TypeScript
-- React
-- Tailwind CSS
+Antes de llegar al agente, la aplicación normaliza los valores (formatos latinoamericanos), calcula métricas derivadas (CTR, CPC, CPL, CPA, ROAS, tasa de conversión, frecuencia), compara periodos y detecta inconsistencias matemáticas.
+
+No utiliza multiagente, RAG, memoria, historial ni APIs externas.

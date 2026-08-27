@@ -10,6 +10,7 @@ import {
 } from "@/components/campaign/ExecutiveReportPanel";
 import { analyzeCampaign } from "@/lib/campaign-analysis.functions";
 import type { NormalizedCampaign } from "@/lib/campaign-metrics";
+import { analyzeMetrics } from "@/lib/metrics-engine";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -37,6 +38,7 @@ function Index() {
   const runAnalysis = useServerFn(analyzeCampaign);
   const [status, setStatus] = useState<AnalysisStatus>("idle");
   const [analysis, setAnalysis] = useState<string | null>(null);
+  const [dataWarnings, setDataWarnings] = useState<string[]>([]);
   const lastPayload = useRef<NormalizedCampaign | null>(null);
   const inFlight = useRef(false);
 
@@ -47,6 +49,11 @@ function Index() {
       lastPayload.current = data;
       setStatus("loading");
       setAnalysis(null);
+      setDataWarnings(
+        analyzeMetrics(data)
+          .warnings.filter((warning) => warning.severity !== "info")
+          .map((warning) => warning.message),
+      );
       try {
         const result = await runAnalysis({ data });
         setAnalysis(result.analysis);
@@ -75,7 +82,12 @@ function Index() {
             isAnalyzing={status === "loading"}
             onAnalyze={(data) => void analyze(data)}
           />
-          <ExecutiveReportPanel status={status} analysis={analysis} onRetry={retry} />
+          <ExecutiveReportPanel
+            status={status}
+            analysis={analysis}
+            dataWarnings={dataWarnings}
+            onRetry={retry}
+          />
         </div>
       </main>
     </div>
