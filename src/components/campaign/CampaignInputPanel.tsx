@@ -6,6 +6,7 @@ import {
   FileText,
   FlaskConical,
   Info,
+  Loader2,
   Wand2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -34,7 +35,13 @@ ROAS: 2,47`;
 
 type InputMode = "paste" | "form";
 
-export function CampaignInputPanel() {
+export function CampaignInputPanel({
+  isAnalyzing = false,
+  onAnalyze,
+}: {
+  isAnalyzing?: boolean;
+  onAnalyze?: (data: NormalizedCampaign) => void;
+}) {
   const [mode, setMode] = useState<InputMode>("paste");
   const [rawValue, setRawValue] = useState("");
   const [form, setForm] = useState<CampaignFormFields>(EMPTY_FORM);
@@ -71,6 +78,7 @@ export function CampaignInputPanel() {
     }
     setEmptyNotice(false);
     setPrepared(normalized);
+    onAnalyze?.(normalized);
   };
 
   return (
@@ -147,7 +155,7 @@ export function CampaignInputPanel() {
           <Notice
             tone="ok"
             icon={<CheckCircle2 className="h-4 w-4" aria-hidden="true" />}
-            text={`Datos preparados: ${filled} campos reconocidos y normalizados. El análisis se habilitará en la siguiente etapa.`}
+            text={`Datos preparados: ${filled} campos reconocidos y normalizados.`}
           />
         ) : null}
       </div>
@@ -165,10 +173,17 @@ export function CampaignInputPanel() {
         <Button
           type="button"
           onClick={handleAnalyze}
-          disabled={!canAnalyze}
-          className="justify-center rounded-xl px-6 transition-colors duration-200"
+          disabled={!canAnalyze || isAnalyzing}
+          className="justify-center gap-2 rounded-xl px-6 transition-colors duration-200"
         >
-          Analizar campaña
+          {isAnalyzing ? (
+            <>
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              Analizando…
+            </>
+          ) : (
+            "Analizar campaña"
+          )}
         </Button>
       </div>
     </section>
