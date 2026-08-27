@@ -1,5 +1,6 @@
 import type { NormalizedCampaign } from "./campaign-metrics";
 import { analyzeMetrics, buildDeterministicBlock } from "./metrics-engine";
+import { runChatCompletion, type ChatMessage } from "./openrouter-client.server";
 
 const SYSTEM_PROMPT = `IDENTIDAD
 Eres "Analista IA de Campañas" de RCKT, especialista en interpretación del desempeño de campañas digitales.
@@ -151,80 +152,41 @@ export function buildUserMessage(data: NormalizedCampaign): string {
   )}`;
 }
 
-/** Llama a Lovable AI (gateway gestionado) y devuelve el texto del análisis. */
+const REQUIRED_HEADING = "## Estado general";
+
+/** Verifica que la respuesta sea mapeable al contrato esperado por el frontend. */
+function isParseable(text: string): boolean {
+  return text.includes(REQUIRED_HEADING) && text.includes("## Resumen ejecutivo");
+}
+
+/** Llama a OpenRouter (server-side) y devuelve el texto del análisis. */
 export async function requestCampaignAnalysis(
   data: NormalizedCampaign,
   signal?: AbortSignal,
 ): Promise<string> {
-  const apiKey = process.env["LOVABLE_API_KEY"];
-  if (!apiKey) throw new Error("AI_CONFIG");
+  const userMessage = buildUserMessage(data);
+  const messages: ChatMessage[] = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: userMessage },
+  ];
 
-  const response = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
-    method: "POST",
-    signal: signal ?? null,
-    headers: {
-      "Content-Type": "application/json",
-      "Lovable-API-Key": apiKey,
-      "X-Lovable-AIG-SDK": "fetch",
-    },
-    body: JSON.stringify({
-      model: "openai/gpt-5.6-sol",
-      stream: true,
-      instructions: SYSTEM_PROMPT,
-      input: [
-        {
-          role: "user",
-          content: [{ type: "input_text", text: buildUserMessage(data) }],
-        },
-      ],
-      reasoning: { effort: "low", summary: "auto" },
-      store: false,
-    }),
-  });
+  const first = await runChatCompletion(messages, signal);
+  if (isParseable(first.text)) return first.text.trim();
 
-  if (!response.ok || !response.body) {
-    const detail = await response.text().catch(() => "");
-    console.error("Lovable AI error", response.status, detail.slice(0, 500));
-    throw new Error(`AI_${response.status}`);
-  }
+  // Única estrategia de recuperación: repetir exigiendo el formato exacto.
+  console.warn(`OpenRouter unparseable response model=${first.model}; retrying with format guard`);
+  const retry = await runChatCompletion(
+    [
+      ...messages,
+      { role: "assistant", content: first.text },
+      {
+        role: "user",
+        content:
+          "La respuesta anterior no cumple el formato obligatorio. Responde de nuevo en español usando EXACTAMENTE los encabezados markdown definidos (## Estado general, ## Resumen ejecutivo, ## Principales hallazgos, ## Qué haría ahora, ## Dato a revisar solo si aplica, ## Información que ayudaría a profundizar), sin texto adicional fuera de esas secciones.",
+      },
+    ],
+    signal,
+  );
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let text = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const chunks = buffer.split("\n\n");
-    buffer = chunks.pop() ?? "";
-    for (const chunk of chunks) {
-      for (const line of chunk.split("\n")) {
-        if (!line.startsWith("data:")) continue;
-        const payload = line.slice(5).trim();
-        if (!payload || payload === "[DONE]") continue;
-        try {
-          const event = JSON.parse(payload) as {
-            type?: string;
-            delta?: string;
-            response?: { output_text?: string };
-          };
-          if (event.type === "response.output_text.delta" && typeof event.delta === "string") {
-            text += event.delta;
-          } else if (
-            event.type === "response.completed" &&
-            !text &&
-            typeof event.response?.output_text === "string"
-          ) {
-            text = event.response.output_text;
-          }
-        } catch {
-          // ignorar eventos no-JSON
-        }
-      }
-    }
-  }
-
-  return text.trim();
+  return (isParseable(retry.text) ? retry.text : first.text).trim();
 }
