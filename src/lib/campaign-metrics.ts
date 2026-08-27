@@ -208,8 +208,8 @@ function parseRawInput(raw: string): Partial<NormalizedCampaign> {
       if (inAdditional && line.trim()) extraLines.push(line.trim());
       continue;
     }
-    const label = match[1].trim().toLowerCase();
-    const value = match[2].trim();
+    const label = (match[1] ?? "").trim().toLowerCase();
+    const value = (match[2] ?? "").trim();
 
     if (LABELS.additionalContext.includes(label)) {
       inAdditional = true;
