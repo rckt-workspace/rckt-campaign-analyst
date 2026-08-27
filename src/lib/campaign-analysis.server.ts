@@ -180,7 +180,6 @@ export async function requestCampaignAnalysis(
   const firstText = sanitize(first.text);
   if (isParseable(firstText)) return firstText;
 
-
   // Única estrategia de recuperación: repetir exigiendo el formato exacto.
   console.warn(`OpenRouter unparseable response model=${first.model}; retrying with format guard`);
   const retry = await runChatCompletion(
