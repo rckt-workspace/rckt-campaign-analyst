@@ -120,7 +120,7 @@ export async function requestCampaignAnalysis(
 
   const response = await fetch("https://ai.gateway.lovable.dev/v1/responses", {
     method: "POST",
-    signal,
+    signal: signal ?? null,
     headers: {
       "Content-Type": "application/json",
       "Lovable-API-Key": apiKey,
