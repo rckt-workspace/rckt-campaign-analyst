@@ -5,8 +5,8 @@ const SECTIONS = [
   "Estado general",
   "Resumen ejecutivo",
   "Principales hallazgos",
-  "Recomendaciones",
-  "Información adicional",
+  "Qué haría ahora",
+  "Información que ayudaría a profundizar",
 ];
 
 export type AnalysisStatus = "idle" | "loading" | "success" | "error";
