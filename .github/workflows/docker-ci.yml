@@ -1,4 +1,4 @@
-name: Docker build and smoke test
+name: Docker Compose and FastAPI tests
 
 on:
   pull_request:
@@ -10,38 +10,43 @@ permissions:
   contents: read
 
 jobs:
-  docker:
+  backend:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: python -m pip install -r backend/requirements-dev.txt
+      - name: Run FastAPI tests
+        working-directory: backend
+        run: python -m pytest -q tests
 
-      - name: Prepare non-secret smoke-test environment
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare test env
         run: cp .env.example .env
-
-      - name: Validate Docker Compose
+      - name: Validate Compose
         run: docker compose config --quiet
-
-      - name: Build production image
+      - name: Build images
         run: docker compose build
-
-      - name: Start application
+      - name: Start services
         run: docker compose up -d --no-build
-
-      - name: Verify HTTP response
+      - name: Test frontend response
         run: |
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent --show-error http://127.0.0.1:3000/ -o /dev/null; then
-              echo "HTTP smoke test passed"
-              exit 0
-            fi
-            sleep 2
+          for i in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:3000/ -o /dev/null; then exit 0; fi
+            sleep 3
           done
           docker compose ps
-          docker compose logs --tail=50 app
+          docker compose logs --tail=60
           exit 1
-
+      - name: Test backend health internally
+        run: docker compose exec -T backend python -c "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8000/healthz').status == 200"
       - name: Shut down
         if: always()
         run: docker compose down

@@ -1,6 +1,5 @@
 import { useCallback, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
 import { AppHeader } from "@/components/campaign/AppHeader";
 import { HeroIntro } from "@/components/campaign/HeroIntro";
 import { CampaignInputPanel } from "@/components/campaign/CampaignInputPanel";
@@ -8,7 +7,7 @@ import {
   ExecutiveReportPanel,
   type AnalysisStatus,
 } from "@/components/campaign/ExecutiveReportPanel";
-import { analyzeCampaign } from "@/lib/campaign-analysis.functions";
+import { analyzeCampaign } from "@/lib/campaign-api.functions";
 import type { NormalizedCampaign } from "@/lib/campaign-metrics";
 import { analyzeMetrics } from "@/lib/metrics-engine";
 
@@ -35,7 +34,6 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-  const runAnalysis = useServerFn(analyzeCampaign);
   const [status, setStatus] = useState<AnalysisStatus>("idle");
   const [analysis, setAnalysis] = useState<string | null>(null);
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
@@ -55,7 +53,7 @@ function Index() {
           .map((warning) => warning.message),
       );
       try {
-        const result = await runAnalysis({ data });
+        const result = await analyzeCampaign({ data });
         setAnalysis(result.analysis);
         setStatus("success");
       } catch (error) {
@@ -65,7 +63,7 @@ function Index() {
         inFlight.current = false;
       }
     },
-    [runAnalysis],
+    [],
   );
 
   const retry = useCallback(() => {

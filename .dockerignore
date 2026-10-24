@@ -1,4 +1,3 @@
-# Source control and local tooling
 .git
 .github
 node_modules
@@ -12,10 +11,9 @@ dist-ssr
 coverage
 .vscode
 .idea
+backend
 *.log
 .DS_Store
-
-# Never include local secrets in a build context.
 .env
 .env.*
 !.env.example

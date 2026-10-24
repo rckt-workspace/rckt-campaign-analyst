@@ -1,22 +1,39 @@
 name: rckt-campaign-analyst
 
 services:
-  app:
+  frontend:
     build:
       context: .
       dockerfile: Dockerfile
-    image: rckt-campaign-analyst:local
+    image: rckt-campaign-analyst-frontend:local
     restart: unless-stopped
     init: true
-    env_file:
-      - .env
     environment:
       NODE_ENV: production
       HOST: 0.0.0.0
       PORT: "3000"
-    # Localhost by default; publish externally only behind HTTPS + access controls.
+      FASTAPI_INTERNAL_URL: http://backend:8000
     ports:
       - "${APP_BIND_IP:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: rckt-campaign-analyst-backend:local
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    expose:
+      - "8000"
     security_opt:
       - no-new-privileges:true
     cap_drop:

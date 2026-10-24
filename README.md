@@ -1,91 +1,61 @@
 # RCKT Campaign Analyst
 
-Herramienta de análisis ejecutivo de campañas digitales desarrollada en RCKT. Permite ingresar métricas mediante texto libre o formulario rápido y obtener hallazgos y acciones recomendadas, explicados para usuarios no técnicos.
+Herramienta de análisis ejecutivo de campañas de RCKT, migrada de un prototipo Lovable a una arquitectura con FastAPI.
 
 ## Arquitectura
 
-- **Frontend:** React 19, TypeScript, TanStack Start, Tailwind.
-- **Backend:** server functions y renderizado del lado del servidor dentro de TanStack Start.
-- **Cálculos:** motor determinístico que normaliza métricas, calcula indicadores derivados y alerta sobre inconsistencias.
-- **Agente de IA:** un único analista, integrado con OpenRouter desde el servidor (modelo principal y fallback configurables).
-- **Despliegue:** Vite + Nitro (preset Node.js) en **un contenedor** operado mediante Docker Compose.
-- **Sin base de datos ni autenticación** en esta versión.
+- Frontend: React 19, TypeScript y TanStack Start (SSR).
+- Backend: Python 3.12 y FastAPI. Pydantic valida entradas; Python calcula indicadores, prepara el contexto y ejecuta el agente IA.
+- Proveedor IA: OpenRouter con modelos principal y de respaldo configurables. El prompt empresarial se conserva en backend/app/prompts/campaign-analyst.txt.
+- Despliegue: Docker Compose, dos contenedores separados en un único comando.
+- El navegador llama a la Server Function de TanStack, que se comunica con FastAPI en la red interna de Docker. FastAPI no publica puertos ni claves al navegador.
+- Sin base de datos, autenticación, RAG ni memoria en esta versión.
 
-Flujo: formulario o texto → normalización de métricas → validaciones y cálculos → server function → OpenRouter → informe ejecutivo.
+## Iniciar
 
-No es necesario levantar por separado un contenedor de frontend y otro de backend: TanStack Start produce un solo servidor que atiende tanto la interfaz como las llamadas de IA.
+Requisitos: Docker Compose v2.
 
-## Requisitos
-
-- Docker Engine con Docker Compose v2 (servidor Linux o equipo de desarrollo).
-- Acceso de red a OpenRouter y una clave válida.
-- Un dominio, HTTPS y control de acceso si va a exponerse fuera del servidor.
-
-## Levantar en Docker Compose
-
-```bash
-cp .env.example .env
-```
-
-Edite **.env** y configure `OPENROUTER_API_KEY` con su clave real. Puede cambiar `CHAT_PRIMARY_LLM` y `CHAT_FALLBACK_LLM` sin reconstruir la imagen. No use variables `VITE_*` para secretos ni suba el archivo `.env` a Git.
+1. Copiar .env.example a .env y configurar OPENROUTER_API_KEY en el servidor. Nunca subir .env a Git.
+2. Ejecutar estos comandos:
 
 ```bash
 docker compose config --quiet
 docker compose up -d --build
 docker compose ps
-docker compose logs --tail=100 app
+docker compose logs --tail=100 frontend backend
+curl --fail http://127.0.0.1:3000/
 ```
 
-La aplicación responderá en **http://127.0.0.1:3000** desde el mismo equipo, por defecto. El contenedor atiende en el puerto 3000 y Docker publica el puerto indicado por `APP_PORT`.
+La interfaz queda en http://127.0.0.1:3000 del servidor Docker. El puerto 8000 de FastAPI es exclusivamente interno.
 
-Verificación básica de disponibilidad (no consume solicitudes de IA):
+La prueba curl confirma disponibilidad HTTP de la interfaz, no una llamada de IA. Probar un análisis real con una clave propia antes de publicar.
+
+## Desarrollo local
+
+Backend:
 
 ```bash
-curl --fail --silent --show-error http://127.0.0.1:3000/ > /dev/null
-docker compose ps
+cd backend
+python -m venv .venv
+# Activar entorno virtual
+python -m pip install -r requirements-dev.txt
+python -m pytest -q tests
+python -m uvicorn app.main:app --reload --port 8000
 ```
 
-Para actualizar con nuevos cambios del repositorio:
-
-```bash
-git pull --ff-only
-docker compose up -d --build
-```
-
-Para detener el servicio:
-
-```bash
-docker compose down
-```
-
-## Desarrollo sin Docker
+Frontend (iniciar con FASTAPI_INTERNAL_URL=http://127.0.0.1:8000 en el entorno del servidor):
 
 ```bash
 bun install --frozen-lockfile
 bun run dev
 ```
 
-Compilación para un servidor Node fuera de Lovable:
+Contrato principal: POST /api/v1/campaigns/analyze, JSON normalizado desde React. Respuesta: JSON con campo analysis (markdown para ExecutiveReportPanel). El endpoint usa Pydantic, motor determinístico y proveedor OpenRouter.
 
-```bash
-RCKT_DEPLOY_TARGET=node bun run build
-node .output/server/index.mjs
-```
+## Seguridad y puesta en producción
 
-En PowerShell, defina primero `$env:RCKT_DEPLOY_TARGET="node"`. El script `bun run start` inicia la misma salida generada por Nitro.
+El servicio se enlaza a localhost por defecto. Antes de exponer a Internet: configurar HTTPS, autenticación de usuarios, rate limiting y cuotas por usuario, observabilidad y rollback. Sin estos controles, visitantes podrían consumir los créditos de OpenRouter de la empresa.
 
-El ajuste condicional en `vite.config.ts` preserva el build y la vista previa gestionados por Lovable, y selecciona el preset de Node exclusivamente cuando `RCKT_DEPLOY_TARGET=node`.
+El código anterior de Lovable/OpenRouter en TanStack queda sin uso en la ruta principal como medida de transición. La vista previa en Lovable necesita alcanzar un backend FastAPI para ejecutar análisis; el despliegue Docker es autónomo.
 
-## Checklist antes de hacerlo público
-
-1. Validar compilación, inicio de servidor, carga de interfaz y una llamada real de prueba a OpenRouter.
-2. Seleccionar un modelo con disponibilidad y límites apropiados: los modelos gratuitos pueden presentar restricciones y no garantizan capacidad de producción.
-3. Agregar **autenticación y límites de uso por usuario/IP** antes de permitir que visitantes externos ejecuten análisis (la aplicación actual no incorpora estas protecciones).
-4. Publicar mediante un proxy inverso con **HTTPS**, política de acceso y registros sin información sensible; mantener `APP_BIND_IP=127.0.0.1` si el proxy corre en el mismo servidor.
-5. Configurar alertas, respaldos de configuración y un mecanismo de reversión de versión. Como no hay base de datos, no se requieren volúmenes de persistencia en esta etapa.
-
-**Seguridad:** exponer `APP_BIND_IP=0.0.0.0` sin autenticación ni controles permitiría a terceros consumir la cuota o créditos de OpenRouter asociados a la clave de la empresa. No hacerlo en producción.
-
-## Estado de esta entrega
-
-Esta rama prepara el despliegue reproducible y la validación de arranque; no publica automáticamente el proyecto en un dominio ni configura credenciales en servidores externos.
+Esta PR es preparación de despliegue: no realiza publicación ni fusiona a main automáticamente.
