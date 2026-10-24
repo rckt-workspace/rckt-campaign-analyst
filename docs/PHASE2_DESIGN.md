@@ -17,13 +17,13 @@ Restricciones que se mantienen:
 
 | Tema | Propuesta | Alternativa descartada y motivo |
 |---|---|---|
-| Base de datos | PostgreSQL 16 en un servicio Compose sin puerto publicado | SQLite: no soporta bien concurrencia ni RLS. |
+| Base de datos | PostgreSQL: contenedor en desarrollo (Compose, sin puerto publicado) y **PostgreSQL gestionado en producción** | SQLite: no soporta bien concurrencia ni RLS. |
 | Acceso a datos | SQLAlchemy 2.x (ORM tipado) + psycopg 3 | Consultas SQL crudas: más riesgo de fugas entre tenants. |
 | Migraciones | Alembic, versionadas en `backend/migrations/`, ejecutadas por un servicio `migrate` de un solo uso | `create_all` al arrancar: no versionado, no reversible. |
-| Autenticación (inicial) | Cuentas locales, contraseña con **argon2id**, sesiones en base de datos con cookie `HttpOnly` | JWT sin revocación: no permite cerrar sesiones de forma inmediata. |
-| Autenticación (objetivo) | OIDC (Microsoft Entra ID o Google Workspace) para SSO corporativo, en una etapa posterior | Implementar IdP propio desde el inicio: costo de seguridad alto. |
+| Autenticación (piloto) | **Proveedor de autenticación gestionado.** La aplicación no almacena contraseñas. Guarda solo el identificador estable del proveedor (`external_subject`) | Contraseñas y sesiones propias: riesgo de seguridad que no aporta valor en el piloto. |
+| Autenticación (objetivo) | SSO corporativo (OIDC) en una etapa posterior, sobre el mismo proveedor | Implementar IdP propio: costo de seguridad alto. |
 | Aislamiento de clientes | Modelo de base compartida con `organization_id` en cada fila de negocio + verificación en cada consulta; RLS de Postgres como defensa adicional (etapa 2.7) | Base por cliente: operación costosa y migraciones multiplicadas. |
-| Cuotas | Límites por organización y mes, reservados **antes** de llamar al proveedor | Medir después: permite gasto sin control. |
+| Cuotas | Límites de consumo de IA **configurables por organización** y mes, reservados **antes** de llamar al proveedor | Medir después: permite gasto sin control. |
 | Idempotencia de análisis | Cabecera `Idempotency-Key` en el POST de análisis | Sin ella, un reintento del navegador cobra dos veces. |
 
 ## 3. Modelo de datos
@@ -46,11 +46,8 @@ Convenciones: claves primarias `uuid` generadas por la aplicación; timestamps `
 **invitations**
 - `id`, `organization_id`, `email`, `role`, `token_hash` (SHA-256 del token, nunca el token), `invited_by`, `expires_at`, `accepted_at`, `revoked_at`.
 
-**sessions**
+**sessions** (solo si se usa cookie de sesión propia; con proveedor gestionado no se crea)
 - `id`, `user_id`, `token_hash`, `active_organization_id` (nullable), `created_at`, `last_seen_at`, `expires_at`, `revoked_at`, `ip_address`, `user_agent`.
-
-**auth_attempts** (límite de intentos fallidos sin Redis)
-- `id`, `email_hash`, `ip_address`, `succeeded`, `created_at`. Se consulta por ventana de tiempo.
 
 ### 3.2 Campañas y datos de entrada
 
@@ -144,12 +141,12 @@ Respuestas de error: códigos estables (`AUTH_REQUIRED`, `FORBIDDEN`, `NOT_FOUND
 ## 6. Reglas de seguridad
 
 - **Tenancy:** el `org_id` solo viene de la ruta y se valida contra la membresía de la sesión. Nunca se toma del cuerpo de la petición. Toda consulta de negocio recibe `organization_id` como parámetro obligatorio.
-- **Contraseñas:** argon2id con parámetros recomendados por OWASP, sin longitud máxima menor a 64 caracteres.
-- **Sesiones:** cookie `HttpOnly`, `SameSite=Lax`, `Secure` en HTTPS. El token se guarda como hash. Expiración absoluta y por inactividad. Cierre de sesión revoca la fila.
-- **CSRF:** en los métodos que modifican datos se valida el encabezado `Origin` y un token de CSRF.
-- **Límites:** intentos de login limitados por IP y por correo usando `auth_attempts`. Tamaños máximos ya existentes en Pydantic.
+- **Identidad:** la autenticación la gestiona el proveedor. FastAPI valida el token de acceso (firma, emisor, audiencia y expiración) y no acepta tokens de otros emisores. La aplicación no guarda contraseñas.
+- **Sesiones:** la gestiona el proveedor. Si se usa cookie de sesión propia, debe ser `HttpOnly`, `SameSite=Lax` y `Secure` en HTTPS.
+- **CSRF:** en los métodos que modifican datos se valida el encabezado `Origin`.
+- **Límites:** tamaños máximos ya existentes en Pydantic. Los límites de intentos de login quedan en el proveedor de autenticación.
 - **Secretos:** `OPENROUTER_API_KEY`, contraseña de Postgres y claves de sesión solo en variables de entorno del servidor. Ninguno en logs, respuestas ni auditoría.
-- **Bootstrap:** no hay registro público. El primer `platform_admin` se crea con un comando CLI en el servidor.
+- **Bootstrap:** no hay registro público. El primer `platform_admin` se crea con un comando CLI en el servidor, sobre un `app_users` ya existente.
 - **Base de datos:** rol de aplicación con permisos mínimos; rol de migración separado; la tabla de auditoría no admite `UPDATE` ni `DELETE`.
 - **Red:** Postgres solo en la red interna de Compose. FastAPI tampoco publica puerto.
 - **Datos sensibles:** montos e ingresos de clientes se tratan como confidenciales. Política de retención por definir (ver sección 9).
@@ -166,7 +163,7 @@ Respuestas de error: códigos estables (`AUTH_REQUIRED`, `FORBIDDEN`, `NOT_FOUND
 
 Si el paso 5 falla, la reserva se libera y el análisis queda `failed` con código seguro.
 
-## 8. Plan de implementación por etapas
+## 8. Plan de implementación por etapas (actualizado)
 
 Cada etapa termina con pruebas, Compose funcionando y sin cambios en el comportamiento visible del MVP.
 
@@ -174,24 +171,24 @@ Cada etapa termina con pruebas, Compose funcionando y sin cambios en el comporta
 |---|---|---|
 | **2.0** | Aprobación de este diseño y de las decisiones de la sección 2. | Decisiones confirmadas por escrito. |
 | **2.1** Persistencia base | Servicio `db` en Compose, SQLAlchemy, Alembic con migración inicial de `organizations`, `users`, `memberships`. Servicio `migrate`. `/readyz`. Pruebas contra Postgres real en CI. | `docker compose up` migra y arranca. Pruebas de migración hacia arriba y abajo. |
-| **2.2** Autenticación | Login, logout, `me`, sesiones, argon2id, CSRF, límite de intentos, comando CLI de bootstrap. Pantalla de login en React con el mismo diseño. | Pruebas de sesión expirada, revocada y contraseña incorrecta sin revelar si el correo existe. |
+| **2.2** Autenticación gestionada | Integración del proveedor de autenticación: validación de tokens en FastAPI, vinculación con `app_users`, cierre de sesión, comando CLI de bootstrap del primer `platform_admin`. | Tokens inválidos, expirados o de otro emisor rechazados. Ninguna contraseña en la base de datos. |
 | **2.3** Tenancy y roles | Organizaciones, miembros, invitaciones, guardas de permiso. Selector de organización en la interfaz. | Pruebas de acceso cruzado (IDOR) en cada endpoint: un usuario de A nunca ve ni modifica datos de B. |
-| **2.4** Campañas | Campañas y entradas de métricas guardadas. La pantalla actual puede guardar. | Entradas inmutables. Pruebas de rol `client_viewer` de solo lectura. |
-| **2.5** Historial de análisis | Persistir análisis, idempotencia y `analysis_usage`. Pantalla de historial. El endpoint MVP se mantiene. | Un reintento con la misma clave no genera un segundo cargo. Prueba con proveedor simulado. |
+| **2.4** Campañas | Campañas y entradas de métricas guardadas, con autorización por organización desde la primera operación. | Entradas inmutables. Pruebas de IDOR y de rol `client_viewer` de solo lectura. |
+| **2.5** Historial de análisis | Persistir análisis, idempotencia y `analysis_usage`. Pantalla de historial. El endpoint MVP se mantiene. `client_viewer` no puede iniciar análisis con costo. | Un reintento con la misma clave no genera un segundo cargo. Prueba con proveedor simulado. |
 | **2.6** Cuotas, costos y auditoría | Reserva de cuota, `usage_monthly`, `audit_events`, endpoints de uso y auditoría. | Con cuota agotada no se llama al proveedor (prueba con simulado). |
 | **2.7** Endurecimiento | RLS de Postgres como segunda barrera, copias de seguridad probadas, métricas de observabilidad, límites de tasa en el proxy. | Restauración de copia verificada. RLS activo con pruebas. |
 | **2.8** SSO (opcional) | OIDC con Microsoft Entra o Google Workspace. | Inicio de sesión corporativo sin contraseñas locales para esa organización. |
 
-Orden recomendado: 2.1 → 2.2 → 2.3 → 2.5 → 2.6 → 2.4 → 2.7 → 2.8. Se coloca el historial antes que las campañas para validar el valor de negocio con el flujo que ya existe.
+Orden recomendado (actualizado): 2.1 → 2.2 → 2.3 → **2.4 campañas → 2.5 historial** → 2.6 → 2.7 → 2.8. La gestión de campañas va antes que el historial, porque el historial depende de campañas y entradas de métricas guardadas.
 
 ## 9. Preguntas para decidir antes de 2.1
 
-1. ¿Confirmas cuentas locales en 2.2 y SSO en 2.8, o prefieres SSO desde el inicio?
+1. ¿Qué proveedor de autenticación gestionada se usará en el piloto? (Pendiente de elegir; afecta la integración de 2.2.)
 2. ¿Qué personal de RCKT necesita acceso de soporte a datos de clientes, y con qué auditoría?
 3. ¿Cuál es la retención esperada de textos de campaña y de análisis? ¿Hay requisitos contractuales de los clientes?
-4. ¿Los clientes ven el prompt o solo el resultado? (Propuesta: solo resultado.)
-5. ¿Cuál es el presupuesto mensual de OpenRouter por organización para el piloto?
-6. ¿Dónde se alojará Postgres en producción (gestionado o contenedor propio)? Afecta la estrategia de copias de seguridad.
+4. Confirmado: las instrucciones internas del agente (prompt) viven solo en el backend. Los clientes no las ven.
+5. ¿Cuáles son los límites de consumo de IA por organización para el piloto? (Configurables; los valores iniciales se definen en 2.6.)
+6. Confirmado: PostgreSQL gestionado en producción. Pendiente: proveedor y política de copias de seguridad.
 
 ## 10. Riesgos
 

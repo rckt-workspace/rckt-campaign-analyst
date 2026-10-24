@@ -120,7 +120,7 @@ def test_provider_failure_propagates_as_provider_error(monkeypatch):
         run(analysis.request_campaign_analysis(CampaignInput(rawInput="x")))
 
 
-SAMPLE_REPORT = Path(__file__).resolve().parents[2] / "e2e" / "fixtures" / "sample-report.md"
+SAMPLE_REPORT = Path(__file__).resolve().parent / "fixtures" / "sample-report.md"
 
 
 def test_sample_report_meets_length_and_format_contract():

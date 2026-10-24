@@ -8,6 +8,8 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir --disable-pip-version-check -r requirements.txt
 
 COPY app ./app
+COPY migrations ./migrations
+COPY alembic.ini ./
 RUN useradd --system --create-home --uid 10001 apiuser
 USER apiuser
 

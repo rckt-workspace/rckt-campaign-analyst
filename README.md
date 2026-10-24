@@ -52,6 +52,14 @@ bun run dev
 
 Contrato principal: POST /api/v1/campaigns/analyze, JSON normalizado desde React. Respuesta: JSON con campo analysis (markdown para ExecutiveReportPanel). El endpoint usa Pydantic, motor determinístico y proveedor OpenRouter.
 
+## Base de datos (Fase 2.1)
+
+- Desarrollo: PostgreSQL 16 en Compose (`docker-compose.override.yml`), sin puerto publicado, con volumen persistente. Configure `POSTGRES_PASSWORD` en `.env`.
+- Migraciones con Alembic: `docker compose run --rm migrate` (también corre automáticamente antes de `backend`). La aplicación no crea tablas al arrancar.
+- Producción: PostgreSQL gestionado. Defina `DATABASE_URL` (y `DATABASE_MIGRATION_URL` con un rol de migración) y ejecute `alembic upgrade head` una vez por despliegue. Detalle en `docs/PHASE2_FOUNDATION.md`.
+- Sin `DATABASE_URL` la aplicación funciona como en la Fase 1.
+- Pruebas de base de datos: `docker compose up -d db && docker compose --profile test run --rm tests` (Python 3.12 contra PostgreSQL real).
+
 ## Modelos de IA
 
 Verificado contra el catálogo público de OpenRouter (`GET /api/v1/models`, sin clave y sin inferencias) el 24/oct/2026:

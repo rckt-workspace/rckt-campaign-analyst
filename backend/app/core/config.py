@@ -66,3 +66,36 @@ def get_ai_settings() -> AISettings:
         max_tokens=_int_env("CHAT_MAX_TOKENS", DEFAULT_MAX_TOKENS, 100, 8192),
         timeout_seconds=_int_env("CHAT_TIMEOUT_MS", 45000, 1000, 120000) / 1000,
     )
+
+
+class DatabaseConfigurationError(Exception):
+    """Invalid DATABASE_URL. The message never includes the URL or its password."""
+
+
+@dataclass(frozen=True)
+class DatabaseSettings:
+    url: str
+    pool_size: int
+    max_overflow: int
+    connect_timeout_seconds: float
+
+
+DATABASE_URL_PREFIX = "postgresql+asyncpg://"
+
+
+def get_database_settings(env_name: str = "DATABASE_URL") -> DatabaseSettings | None:
+    """Return None when no database is configured, so the stateless MVP keeps starting unchanged."""
+    url = os.environ.get(env_name, "").strip()
+    if not url:
+        return None
+    if not url.startswith(DATABASE_URL_PREFIX):
+        raise DatabaseConfigurationError(f"{env_name} must start with {DATABASE_URL_PREFIX}")
+    try:
+        return DatabaseSettings(
+            url=url,
+            pool_size=_int_env("DATABASE_POOL_SIZE", 5, 1, 50),
+            max_overflow=_int_env("DATABASE_MAX_OVERFLOW", 5, 0, 50),
+            connect_timeout_seconds=_int_env("DATABASE_CONNECT_TIMEOUT_SECONDS", 5, 1, 30),
+        )
+    except AIConfigurationError as exc:
+        raise DatabaseConfigurationError(f"invalid database setting {exc}") from None

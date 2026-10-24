@@ -15,7 +15,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 PORT = 18080
-REPORT = (Path(__file__).parent / "fixtures" / "sample-report.md").read_text(encoding="utf-8").strip()
+REPORT = (Path(__file__).resolve().parents[1] / "backend" / "tests" / "fixtures" / "sample-report.md").read_text(encoding="utf-8").strip()
 SLOW_SECONDS = 1.5
 SECRET_ERROR_DETAIL = b"upstream secret detail"
 
