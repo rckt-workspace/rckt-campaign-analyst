@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import httpx
 import pytest
@@ -117,3 +118,30 @@ def test_provider_failure_propagates_as_provider_error(monkeypatch):
     monkeypatch.setattr(analysis, "run_chat_completion", failing)
     with pytest.raises(AIProviderError, match="AI_401"):
         run(analysis.request_campaign_analysis(CampaignInput(rawInput="x")))
+
+
+SAMPLE_REPORT = Path(__file__).resolve().parents[2] / "e2e" / "fixtures" / "sample-report.md"
+
+
+def test_sample_report_meets_length_and_format_contract():
+    text = analysis.sanitize(SAMPLE_REPORT.read_text(encoding="utf-8"))
+    words = len(text.split())
+    assert 250 <= words <= 450, f"report has {words} words"
+    assert analysis.is_parseable(text)
+    for heading in (
+        "## Estado general", "## Resumen ejecutivo", "## Principales hallazgos",
+        "## Qué haría ahora", "## Información que ayudaría a profundizar",
+    ):
+        assert heading in text
+
+
+def test_truncated_response_is_returned_for_format_guard(monkeypatch):
+    def truncated(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{
+            "message": {"content": "## Estado general\n🟡 Requiere atención\n## Resumen ejecutivo\nCortado",
+                        "role": "assistant"},
+            "finish_reason": "length",
+        }]})
+
+    result = run(call_model(settings(), "primary-test", [], transport=httpx.MockTransport(truncated)))
+    assert analysis.is_parseable(analysis.sanitize(result))

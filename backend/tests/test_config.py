@@ -19,13 +19,17 @@ def clean_env(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "unit-test-secret")
 
 
-def test_defaults_match_original_lovable_configuration(clean_env):
+def test_defaults_use_catalog_verified_models_and_token_budget(clean_env):
     settings = get_ai_settings()
-    assert settings.primary_model == "google/gemma-3-4b-it:free" == DEFAULT_PRIMARY_MODEL
-    assert settings.fallback_model == "openrouter/free" == DEFAULT_FALLBACK_MODEL
-    assert settings.max_tokens == 450 == DEFAULT_MAX_TOKENS
+    assert settings.primary_model == DEFAULT_PRIMARY_MODEL == "google/gemma-3-27b-it"
+    assert settings.fallback_model == DEFAULT_FALLBACK_MODEL == "openrouter/free"
+    assert settings.max_tokens == DEFAULT_MAX_TOKENS == 1200
     assert settings.timeout_seconds == 45
     assert settings.use_fallback is True
+
+
+def test_retired_free_gemma_is_not_the_default():
+    assert DEFAULT_PRIMARY_MODEL != "google/gemma-3-4b-it:free"
 
 
 def test_missing_key_is_a_configuration_error(monkeypatch, clean_env):

@@ -3,10 +3,12 @@
 import os
 from dataclasses import dataclass
 
-# Defaults carried over unchanged from the original Lovable server configuration.
-DEFAULT_PRIMARY_MODEL = "google/gemma-3-4b-it:free"
+# Verified against the OpenRouter model catalog (2026-10-24). See README "Modelos de IA".
+# google/gemma-3-4b-it:free is no longer listed, so it was dropped as the default.
+DEFAULT_PRIMARY_MODEL = "google/gemma-3-27b-it"
 DEFAULT_FALLBACK_MODEL = "openrouter/free"
-DEFAULT_MAX_TOKENS = 450
+# A 250–450 word Spanish report with markdown needs roughly 700–900 tokens; 450 truncated it.
+DEFAULT_MAX_TOKENS = 1200
 
 
 @dataclass(frozen=True)

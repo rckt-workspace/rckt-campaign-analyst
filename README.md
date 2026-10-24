@@ -52,6 +52,26 @@ bun run dev
 
 Contrato principal: POST /api/v1/campaigns/analyze, JSON normalizado desde React. Respuesta: JSON con campo analysis (markdown para ExecutiveReportPanel). El endpoint usa Pydantic, motor determinístico y proveedor OpenRouter.
 
+## Modelos de IA
+
+Verificado contra el catálogo público de OpenRouter (`GET /api/v1/models`, sin clave y sin inferencias) el 24/oct/2026:
+
+| Rol | Modelo | Motivo |
+|---|---|---|
+| Principal (por defecto) | `google/gemma-3-27b-it` | Listado, de pago y muy económico (≈ 0,08 USD / 0,35 USD por millón de tokens de entrada / salida; ≈ 0,0004 USD por análisis). Sin razonamiento oculto. |
+| Alternativa gratuita | `google/gemma-4-31b-it:free` | Gratuito, pero soporta razonamiento que consume `max_tokens`. Requiere validar con una prueba autorizada antes de usarlo. |
+| Fallback (por defecto) | `openrouter/free` | Router gratuito listado; elige un modelo disponible. |
+
+`google/gemma-3-4b-it:free` ya no aparece en el catálogo y fue retirado como valor por defecto. Configuración en `CHAT_PRIMARY_LLM` y `CHAT_FALLBACK_LLM`.
+
+`CHAT_MAX_TOKENS=1200`: un informe de 250 a 450 palabras en español con markdown necesita aproximadamente 700 a 900 tokens (estimación). Con 450 el informe se cortaba. La truncación queda registrada en los logs del backend.
+
+## Pruebas
+
+- Backend (Python 3.12): `cd backend && python -m pytest -q tests`, o `bun run test:backend`.
+- Extremo a extremo: `bun run test:e2e`. Compila el frontend en modo Node, levanta un proveedor OpenRouter simulado (`e2e/fake-openrouter.py`), FastAPI y el servidor Node en los puertos de prueba 18080, 18000 y 3100, y ejecuta Playwright con Chromium. No llama a OpenRouter ni consume créditos.
+- Chromium: `bunx playwright install chromium`.
+
 ## Seguridad y puesta en producción
 
 El servicio se enlaza a localhost por defecto. Antes de exponer a Internet: configurar HTTPS, autenticación de usuarios, rate limiting y cuotas por usuario, observabilidad y rollback. Sin estos controles, visitantes podrían consumir los créditos de OpenRouter de la empresa.

@@ -75,9 +75,13 @@ async def call_model(
 
     try:
         payload: Any = response.json()
-        text = payload["choices"][0]["message"]["content"]
+        choice = payload["choices"][0]
+        text = choice["message"]["content"]
         if not isinstance(text, str) or not text.strip():
             raise ValueError("empty content")
+        if choice.get("finish_reason") == "length":
+            # The report was cut at CHAT_MAX_TOKENS; the answer is still returned so the format guard can decide.
+            logger.warning("LLM response truncated by max_tokens for model %s", model)
         return text.strip()
     except (ValueError, TypeError, KeyError, IndexError) as exc:
         logger.warning("LLM empty or invalid response for model %s", model)
