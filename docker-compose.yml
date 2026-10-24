@@ -1,0 +1,23 @@
+name: rckt-campaign-analyst
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rckt-campaign-analyst:local
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+    # Localhost by default; publish externally only behind HTTPS + access controls.
+    ports:
+      - "${APP_BIND_IP:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

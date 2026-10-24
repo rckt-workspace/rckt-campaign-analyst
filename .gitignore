@@ -30,3 +30,11 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local secrets / production configuration
+.env
+.env.*
+!.env.example
+.dev.vars.*
+*.pem
+*.key

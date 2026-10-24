@@ -1,0 +1,24 @@
+# Source control and local tooling
+.git
+.github
+node_modules
+dist
+dist-ssr
+.output
+.vinxi
+.tanstack
+.nitro
+.wrangler
+coverage
+.vscode
+.idea
+*.log
+.DS_Store
+
+# Never include local secrets in a build context.
+.env
+.env.*
+!.env.example
+.dev.vars
+*.pem
+*.key

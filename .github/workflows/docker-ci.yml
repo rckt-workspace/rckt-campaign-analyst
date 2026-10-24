@@ -1,0 +1,47 @@
+name: Docker build and smoke test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Prepare non-secret smoke-test environment
+        run: cp .env.example .env
+
+      - name: Validate Docker Compose
+        run: docker compose config --quiet
+
+      - name: Build production image
+        run: docker compose build
+
+      - name: Start application
+        run: docker compose up -d --no-build
+
+      - name: Verify HTTP response
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent --show-error http://127.0.0.1:3000/ -o /dev/null; then
+              echo "HTTP smoke test passed"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose ps
+          docker compose logs --tail=50 app
+          exit 1
+
+      - name: Shut down
+        if: always()
+        run: docker compose down
