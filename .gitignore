@@ -38,3 +38,7 @@ dist-ssr
 .dev.vars.*
 *.pem
 *.key
+
+# Python caches
+__pycache__/
+.pytest_cache/

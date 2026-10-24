@@ -3,6 +3,11 @@
 import os
 from dataclasses import dataclass
 
+# Defaults carried over unchanged from the original Lovable server configuration.
+DEFAULT_PRIMARY_MODEL = "google/gemma-3-4b-it:free"
+DEFAULT_FALLBACK_MODEL = "openrouter/free"
+DEFAULT_MAX_TOKENS = 450
+
 
 @dataclass(frozen=True)
 class AISettings:
@@ -46,8 +51,8 @@ def get_ai_settings() -> AISettings:
     if not key:
         raise AIConfigurationError("OPENROUTER_API_KEY")
     base_url = (os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1").strip().rstrip("/")
-    primary = (os.environ.get("CHAT_PRIMARY_LLM") or "openrouter/free").strip()
-    fallback = (os.environ.get("CHAT_FALLBACK_LLM") or "openrouter/free").strip()
+    primary = (os.environ.get("CHAT_PRIMARY_LLM") or DEFAULT_PRIMARY_MODEL).strip()
+    fallback = (os.environ.get("CHAT_FALLBACK_LLM") or DEFAULT_FALLBACK_MODEL).strip()
     return AISettings(
         api_key=key,
         base_url=base_url,
@@ -56,6 +61,6 @@ def get_ai_settings() -> AISettings:
         use_fallback=os.environ.get("CHAT_USE_FALLBACK", "true").lower().strip() in ("1", "true", "yes", "on"),
         temperature=_float_env("CHAT_TEMPERATURE", 0.2, 0, 2),
         top_p=_float_env("CHAT_TOP_P", 0.8, 0, 1),
-        max_tokens=_int_env("CHAT_MAX_TOKENS", 900, 100, 8192),
+        max_tokens=_int_env("CHAT_MAX_TOKENS", DEFAULT_MAX_TOKENS, 100, 8192),
         timeout_seconds=_int_env("CHAT_TIMEOUT_MS", 45000, 1000, 120000) / 1000,
     )

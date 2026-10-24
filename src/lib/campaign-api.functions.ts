@@ -29,7 +29,7 @@ const payloadSchema = z.object({
 export const analyzeCampaign = createServerFn({ method: "POST" })
   .inputValidator((data: unknown) => payloadSchema.parse(data))
   .handler(async ({ data }) => {
-    const baseUrl = process.env.FASTAPI_INTERNAL_URL ?? "http://127.0.0.1:8000";
+    const baseUrl = process.env["FASTAPI_INTERNAL_URL"] ?? "http://127.0.0.1:8000";
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 110_000);
     try {

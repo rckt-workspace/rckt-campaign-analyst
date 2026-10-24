@@ -4,7 +4,7 @@ import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
 // Preserve Lovable's own preview target. For Docker only, force Nitro to emit
 // a standalone Node.js server + client assets in .output/.
-const isNodeDeployment = process.env.RCKT_DEPLOY_TARGET === "node";
+const isNodeDeployment = process.env["RCKT_DEPLOY_TARGET"] === "node";
 
 export default defineConfig({
   tanstackStart: {

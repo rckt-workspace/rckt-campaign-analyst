@@ -31,7 +31,8 @@ services:
     restart: unless-stopped
     init: true
     env_file:
-      - .env
+      - path: .env
+        required: false
     expose:
       - "8000"
     security_opt:

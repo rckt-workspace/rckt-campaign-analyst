@@ -26,7 +26,7 @@ docker compose logs --tail=100 frontend backend
 curl --fail http://127.0.0.1:3000/
 ```
 
-La interfaz queda en http://127.0.0.1:3000 del servidor Docker. El puerto 8000 de FastAPI es exclusivamente interno.
+La interfaz queda en http://127.0.0.1:3000 del servidor Docker (cambiar con APP_PORT en .env si ese puerto está ocupado). El puerto 8000 de FastAPI es exclusivamente interno.
 
 La prueba curl confirma disponibilidad HTTP de la interfaz, no una llamada de IA. Probar un análisis real con una clave propia antes de publicar.
 
@@ -56,6 +56,6 @@ Contrato principal: POST /api/v1/campaigns/analyze, JSON normalizado desde React
 
 El servicio se enlaza a localhost por defecto. Antes de exponer a Internet: configurar HTTPS, autenticación de usuarios, rate limiting y cuotas por usuario, observabilidad y rollback. Sin estos controles, visitantes podrían consumir los créditos de OpenRouter de la empresa.
 
-El código anterior de Lovable/OpenRouter en TanStack queda sin uso en la ruta principal como medida de transición. La vista previa en Lovable necesita alcanzar un backend FastAPI para ejecutar análisis; el despliegue Docker es autónomo.
+La llamada directa a OpenRouter desde Node fue eliminada: OpenRouter se invoca únicamente desde FastAPI. La vista previa en Lovable necesita alcanzar un backend FastAPI para ejecutar análisis; el despliegue Docker es autónomo.
 
 Esta PR es preparación de despliegue: no realiza publicación ni fusiona a main automáticamente.
