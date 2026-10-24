@@ -99,3 +99,27 @@ def get_database_settings(env_name: str = "DATABASE_URL") -> DatabaseSettings | 
         )
     except AIConfigurationError as exc:
         raise DatabaseConfigurationError(f"invalid database setting {exc}") from None
+
+
+class AuthConfigurationError(Exception):
+    """Invalid authentication settings. Never includes the values themselves."""
+
+
+@dataclass(frozen=True)
+class AuthSettings:
+    issuer: str
+    audience: str
+    jwks_url: str
+
+
+def get_auth_settings() -> AuthSettings | None:
+    """Return None when SUPABASE_URL is unset. Protected endpoints then answer 503 (fail closed)."""
+    base = os.environ.get("SUPABASE_URL", "").strip().rstrip("/")
+    if not base:
+        return None
+    if not base.startswith("https://") and not base.startswith("http://127.0.0.1:") and not base.startswith("http://localhost:"):
+        # Plain HTTP is accepted only for the local test issuer.
+        raise AuthConfigurationError("SUPABASE_URL must use https")
+    issuer = os.environ.get("SUPABASE_JWT_ISSUER", "").strip().rstrip("/") or f"{base}/auth/v1"
+    audience = os.environ.get("SUPABASE_JWT_AUDIENCE", "").strip() or "authenticated"
+    return AuthSettings(issuer=issuer, audience=audience, jwks_url=f"{base}/auth/v1/.well-known/jwks.json")

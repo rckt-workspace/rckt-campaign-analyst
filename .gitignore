@@ -46,3 +46,7 @@ __pycache__/
 # Playwright
 test-results/
 playwright-report/
+
+# End-to-end test sessions (contain cookies)
+e2e/.auth/
+e2e/.frontend.log

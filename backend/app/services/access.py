@@ -6,7 +6,7 @@ from collections.abc import Iterable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import OrganizationMembership
-from app.db.repositories import MembershipRepository
+from app.db.repositories import MembershipRepository, OrganizationRepository
 from app.domain.access import Role
 
 
@@ -30,6 +30,11 @@ async def require_role(
     )
     if membership is None:
         raise OrganizationNotFoundError
+    organization = await OrganizationRepository(session).get(organization_id)
+    if organization is None:
+        raise OrganizationNotFoundError
+    if organization.status != "active":
+        raise PermissionDeniedError
     if Role(membership.role) not in set(allowed):
         raise PermissionDeniedError
     return membership

@@ -1,5 +1,6 @@
 """Public API request/response schemas. Field names preserve the React contract."""
 
+import uuid
 from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -54,3 +55,22 @@ class CampaignInput(BaseModel):
 
 class AnalysisResponse(BaseModel):
     analysis: str
+
+
+class MeUser(BaseModel):
+    """Minimal identity. The provider subject and other internal fields are deliberately not exposed."""
+
+    id: uuid.UUID
+    email: str | None
+
+
+class MeOrganization(BaseModel):
+    id: uuid.UUID
+    slug: str
+    name: str
+    role: str
+
+
+class MeResponse(BaseModel):
+    user: MeUser
+    organizations: list[MeOrganization]

@@ -29,7 +29,7 @@ backend/
     versions/20261024_0001_foundation.py
   tests/                    pruebas de base de datos (requieren TEST_DATABASE_URL) y de configuración
 db/init/01-create-test-database.sql   crea rckt_test en el primer arranque del volumen
-docker-compose.override.yml           db, migrate, tests (solo desarrollo)
+compose.dev.yml                       db, migrate, tests (solo desarrollo; se combina explícitamente)
 ```
 
 Separación de responsabilidades: los modelos describen tablas, las reglas de rol viven en `domain/`, y el acceso a datos está en repositorios. Los esquemas de la API siguen en `domain/schemas.py`, sin cambios.
@@ -54,14 +54,14 @@ Los nombres de restricciones son explícitos en modelos y migración. Así Alemb
 
 ## Migraciones: procedimiento
 
-Desarrollo (Compose):
+Desarrollo (Compose; siempre con los dos archivos explícitos):
 
 ```bash
-docker compose up -d db              # PostgreSQL con healthcheck
-docker compose run --rm migrate      # ejecuta: alembic upgrade head
+docker compose -f docker-compose.yml -f compose.dev.yml up -d db              # PostgreSQL con healthcheck
+docker compose -f docker-compose.yml -f compose.dev.yml run --rm migrate      # ejecuta: alembic upgrade head
 ```
 
-El servicio `migrate` también se ejecuta antes de `backend`, porque `backend` depende de que termine correctamente.
+El servicio `migrate` (en `compose.dev.yml`) también se ejecuta antes de `backend`, porque `backend` depende de que termine correctamente.
 
 Producción (PostgreSQL gestionado): no se usa el archivo de desarrollo. Las migraciones se ejecutan una vez por despliegue, con un rol de migración distinto del rol de la aplicación:
 
@@ -106,8 +106,8 @@ Reglas:
 Las pruebas se ejecutan en Python 3.12 dentro de Compose contra PostgreSQL real:
 
 ```bash
-docker compose up -d db
-docker compose --profile test run --rm tests
+docker compose -f docker-compose.yml -f compose.dev.yml up -d db
+docker compose -f docker-compose.yml -f compose.dev.yml --profile test run --rm tests
 ```
 
 El servicio `tests` monta `backend/` como solo lectura y usa la base `rckt_test`. Cubre migraciones (creación, coincidencia con los modelos y ida y vuelta de downgrade/upgrade), restricciones de la base (slug, estado, rol, unicidad de membresía), aislamiento entre organizaciones, rol `client_viewer` sin costo de IA, rollback de transacciones fallidas, persistencia entre conexiones, y errores de conexión sin filtrar secretos.

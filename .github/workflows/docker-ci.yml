@@ -42,10 +42,26 @@ jobs:
         run: python -m pytest -q -rs tests
 
   e2e:
-    # Browser tests against the built frontend, FastAPI and a simulated OpenRouter.
-    # No real provider calls and no credits consumed.
+    # Browser tests against the built frontend, FastAPI, a simulated identity provider and a simulated OpenRouter.
+    # No real provider calls, no credits consumed, no real Supabase project.
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: rckt
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U rckt -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      E2E_DATABASE_URL: postgresql+asyncpg://rckt:ci-only-password@127.0.0.1:5432/rckt_e2e_test
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -78,22 +94,22 @@ jobs:
       - name: Prepare test env
         run: cp .env.example .env
       - name: Validate Compose
-        run: docker compose config --quiet
+        run: docker compose -f docker-compose.yml -f compose.dev.yml config --quiet
       - name: Build images
-        run: docker compose build
+        run: docker compose -f docker-compose.yml -f compose.dev.yml build
       - name: Start services
-        run: docker compose up -d --no-build
+        run: docker compose -f docker-compose.yml -f compose.dev.yml up -d --no-build
       - name: Test frontend response
         run: |
           for i in $(seq 1 40); do
             if curl --fail --silent http://127.0.0.1:3000/ -o /dev/null; then exit 0; fi
             sleep 3
           done
-          docker compose ps
-          docker compose logs --tail=60
+          docker compose -f docker-compose.yml -f compose.dev.yml ps
+          docker compose -f docker-compose.yml -f compose.dev.yml logs --tail=60
           exit 1
       - name: Test backend health internally
-        run: docker compose exec -T backend python -c "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8000/healthz').status == 200"
+        run: docker compose -f docker-compose.yml -f compose.dev.yml exec -T backend python -c "import urllib.request; assert urllib.request.urlopen('http://127.0.0.1:8000/healthz').status == 200"
       - name: Shut down
         if: always()
-        run: docker compose down
+        run: docker compose -f docker-compose.yml -f compose.dev.yml down

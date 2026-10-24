@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { ANALYSIS_ERRORS } from "./analysis-errors";
 
 const numeric = z.number().finite().nullable();
 const text = z.string().max(2000).nullable();
@@ -26,34 +27,64 @@ const payloadSchema = z.object({
   }).default({}),
 });
 
+const requestSchema = z.object({
+  data: payloadSchema,
+  /**
+   * Optional organization chosen in the UI. It is a selection only: FastAPI validates it against the
+   * user's stored memberships. When omitted, the first authorized organization is used.
+   */
+  organizationId: z.string().uuid().optional(),
+});
+
 export const analyzeCampaign = createServerFn({ method: "POST" })
-  .inputValidator((data: unknown) => payloadSchema.parse(data))
-  .handler(async ({ data }) => {
-    const baseUrl = process.env["FASTAPI_INTERNAL_URL"] ?? "http://127.0.0.1:8000";
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 110_000);
+  .inputValidator((input: unknown) => requestSchema.parse(input))
+  .handler(async ({ data: request }) => {
+    // Loaded here, not at module level, so server-only code never reaches the browser bundle.
+    const { fastapiRequest, FastapiError } = await import("./fastapi-client.server");
+    type Me = import("./fastapi-client.server").MeResponse;
+    const { AuthNotConfiguredError, createSupabaseServerClient } = await import("./supabase/server");
+
+    let supabase;
     try {
-      const response = await fetch(baseUrl.replace(/\/+$/, "") + "/api/v1/campaigns/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        console.error("Campaign API HTTP status:", response.status);
-        throw new Error("CAMPAIGN_API_UNAVAILABLE");
-      }
-      const payload: unknown = await response.json();
-      if (typeof payload !== "object" || payload === null ||
-          !("analysis" in payload) || typeof payload.analysis !== "string" ||
-          !payload.analysis.trim()) {
-        throw new Error("CAMPAIGN_API_INVALID_RESPONSE");
-      }
-      return { analysis: payload.analysis };
+      supabase = createSupabaseServerClient();
     } catch (error) {
-      console.error("Campaign API error", error instanceof Error ? error.message : "unknown");
-      throw new Error("CAMPAIGN_API_UNAVAILABLE");
-    } finally {
-      clearTimeout(timeout);
+      if (error instanceof AuthNotConfiguredError) throw new Error(ANALYSIS_ERRORS.SESSION_EXPIRED);
+      throw error;
+    }
+
+    // Identity is established from the signed session cookie, never from anything the browser sends.
+    const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
+    if (claimsError || !claimsData) throw new Error(ANALYSIS_ERRORS.SESSION_EXPIRED);
+
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) throw new Error(ANALYSIS_ERRORS.SESSION_EXPIRED);
+
+    try {
+      let organizationId = request.organizationId;
+      if (!organizationId) {
+        const me = await fastapiRequest<Me>("/api/v1/me", { token, timeoutMs: 10_000 });
+        const first = me.organizations[0];
+        if (!first) throw new Error(ANALYSIS_ERRORS.NO_ORGANIZATION);
+        organizationId = first.id;
+      }
+
+      const response = await fastapiRequest<{ analysis: string }>(
+        `/api/v1/organizations/${organizationId}/campaigns/analyze`,
+        { token, method: "POST", body: request.data, timeoutMs: 110_000 },
+      );
+      if (typeof response.analysis !== "string" || !response.analysis.trim()) {
+        throw new Error(ANALYSIS_ERRORS.UNAVAILABLE);
+      }
+      return { analysis: response.analysis };
+    } catch (error) {
+      if (error instanceof Error && (Object.values(ANALYSIS_ERRORS) as string[]).includes(error.message)) throw error;
+      if (error instanceof FastapiError) {
+        if (error.status === 401) throw new Error(ANALYSIS_ERRORS.SESSION_EXPIRED);
+        if (error.status === 403) throw new Error(ANALYSIS_ERRORS.FORBIDDEN);
+        if (error.status === 404) throw new Error(ANALYSIS_ERRORS.NO_ORGANIZATION);
+      }
+      console.error("Campaign analysis unavailable");
+      throw new Error(ANALYSIS_ERRORS.UNAVAILABLE);
     }
   });

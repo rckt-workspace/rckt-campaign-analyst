@@ -1,6 +1,6 @@
-# Development only. Docker Compose loads this file automatically with docker-compose.yml.
-# Production uses docker-compose.yml with a managed PostgreSQL: DATABASE_URL points to it, and
-# this file is not loaded (docker compose -f docker-compose.yml up -d).
+# Development only. Always combine it explicitly:
+#   docker compose -f docker-compose.yml -f compose.dev.yml up -d
+# docker-compose.yml alone never starts a PostgreSQL container; production uses a managed database.
 name: rckt-campaign-analyst
 
 services:
@@ -20,9 +20,12 @@ services:
       timeout: 3s
       retries: 20
       start_period: 5s
-    # No ports: the database is reachable only from containers on the private Compose network.
+    # Containers reach the database on the private network. The host gets loopback-only access
+    # for local end-to-end tests; nothing is published on public interfaces.
     expose:
       - "5432"
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-55432}:5432"
     security_opt:
       - no-new-privileges:true
 

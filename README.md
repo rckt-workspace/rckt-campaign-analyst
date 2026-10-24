@@ -52,13 +52,20 @@ bun run dev
 
 Contrato principal: POST /api/v1/campaigns/analyze, JSON normalizado desde React. Respuesta: JSON con campo analysis (markdown para ExecutiveReportPanel). El endpoint usa Pydantic, motor determinístico y proveedor OpenRouter.
 
+## Autenticación (Fase 2.2)
+
+- Identidad: Supabase Auth. Sesión en cookies `HttpOnly` gestionadas por el servidor de TanStack; el navegador no recibe tokens.
+- FastAPI verifica cada token contra el JWKS del proyecto (ES256/RS256, issuer, audience, expiración). Sin `SUPABASE_URL` las rutas protegidas responden 503.
+- Organizaciones y roles se conceden solo con la CLI de operador: `python -m app.cli create-organization | provision-user | grant-membership`.
+- Variables: `SUPABASE_URL` y `SUPABASE_PUBLISHABLE_KEY` (solo servidor). Detalle, procedimiento y limitaciones en `docs/PHASE2_AUTH.md`. Resultados en `docs/PHASE2_AUTH_RESULTS.md`.
+
 ## Base de datos (Fase 2.1)
 
-- Desarrollo: PostgreSQL 16 en Compose (`docker-compose.override.yml`), sin puerto publicado, con volumen persistente. Configure `POSTGRES_PASSWORD` en `.env`.
-- Migraciones con Alembic: `docker compose run --rm migrate` (también corre automáticamente antes de `backend`). La aplicación no crea tablas al arrancar.
+- Desarrollo: PostgreSQL 16 definido en `compose.dev.yml`, con volumen persistente, accesible desde Compose y solo en loopback (`127.0.0.1:55432`) para pruebas. Configure `POSTGRES_PASSWORD` en `.env`. El archivo base `docker-compose.yml` nunca arranca PostgreSQL.
+- Migraciones con Alembic: `docker compose -f docker-compose.yml -f compose.dev.yml run --rm migrate` (también corre automáticamente antes de `backend`). La aplicación no crea tablas al arrancar.
 - Producción: PostgreSQL gestionado. Defina `DATABASE_URL` (y `DATABASE_MIGRATION_URL` con un rol de migración) y ejecute `alembic upgrade head` una vez por despliegue. Detalle en `docs/PHASE2_FOUNDATION.md`.
 - Sin `DATABASE_URL` la aplicación funciona como en la Fase 1.
-- Pruebas de base de datos: `docker compose up -d db && docker compose --profile test run --rm tests` (Python 3.12 contra PostgreSQL real).
+- Pruebas de base de datos: `docker compose -f docker-compose.yml -f compose.dev.yml up -d db` y luego `docker compose -f docker-compose.yml -f compose.dev.yml --profile test run --rm tests` (Python 3.12 contra PostgreSQL real).
 
 ## Modelos de IA
 
