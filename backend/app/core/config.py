@@ -1,0 +1,61 @@
+"""Configuration is read only by FastAPI; never forwarded to the browser."""
+
+import os
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class AISettings:
+    api_key: str
+    base_url: str
+    primary_model: str
+    fallback_model: str
+    use_fallback: bool
+    temperature: float
+    top_p: float
+    max_tokens: int
+    timeout_seconds: float
+
+
+class AIConfigurationError(Exception):
+    pass
+
+
+def _float_env(name: str, default: float, minimum: float, maximum: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except ValueError as exc:
+        raise AIConfigurationError(name) from exc
+    if not minimum <= value <= maximum:
+        raise AIConfigurationError(name)
+    return value
+
+
+def _int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError as exc:
+        raise AIConfigurationError(name) from exc
+    if not minimum <= value <= maximum:
+        raise AIConfigurationError(name)
+    return value
+
+
+def get_ai_settings() -> AISettings:
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not key:
+        raise AIConfigurationError("OPENROUTER_API_KEY")
+    base_url = (os.environ.get("OPENROUTER_BASE_URL") or "https://openrouter.ai/api/v1").strip().rstrip("/")
+    primary = (os.environ.get("CHAT_PRIMARY_LLM") or "openrouter/free").strip()
+    fallback = (os.environ.get("CHAT_FALLBACK_LLM") or "openrouter/free").strip()
+    return AISettings(
+        api_key=key,
+        base_url=base_url,
+        primary_model=primary,
+        fallback_model=fallback,
+        use_fallback=os.environ.get("CHAT_USE_FALLBACK", "true").lower().strip() in ("1", "true", "yes", "on"),
+        temperature=_float_env("CHAT_TEMPERATURE", 0.2, 0, 2),
+        top_p=_float_env("CHAT_TOP_P", 0.8, 0, 1),
+        max_tokens=_int_env("CHAT_MAX_TOKENS", 900, 100, 8192),
+        timeout_seconds=_int_env("CHAT_TIMEOUT_MS", 45000, 1000, 120000) / 1000,
+    )
