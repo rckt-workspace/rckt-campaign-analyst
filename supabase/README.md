@@ -4,7 +4,7 @@ Esta carpeta contiene el esquema empresarial como SQL plano de PostgreSQL. Sirve
 
 Las migraciones las ejecuta el responsable de RCKT, a mano, en Lovable Cloud o en Supabase, después de revisar los archivos. Este repositorio nunca ejecuta SQL contra una base remota.
 
-Estado conocido: la migración de fundación ya fue ejecutada en Lovable Cloud por el responsable (informado; la fecha no está registrada en `applied-migrations.md`).
+Estado conocido (informado por el responsable): las migraciones `20261025000100_foundation.sql` y `20261025000200_campaigns.sql` fueron aplicadas manualmente en Lovable Cloud y verificadas mediante consultas SQL. Las fechas no se registraron; ver `applied-migrations.md`.
 
 ## 1. Orden de migraciones
 
@@ -44,6 +44,8 @@ Para la migración de campañas (`20261025000200_campaigns.sql`):
 Si el script falla a mitad, la transacción se revierte por el `BEGIN`/`COMMIT`. Revisar el error antes de reintentar.
 
 ## 4. Procedimiento en Supabase licenciado (futuro)
+
+**Importante, ya aplicable a Lovable Cloud:** las migraciones de esta carpeta fueron ejecutadas a mano. Eso no equivale a un registro en el historial de Supabase CLI ni en ninguna otra herramienta. Este repositorio contiene `supabase/config.toml` (generado por Lovable), así que el CLI reconoce `supabase/migrations/` como su propia carpeta de migraciones. Antes de usar `supabase db push` en esa base, hay que revisar el estado del historial del CLI, porque podría intentar reaplicar los archivos ya ejecutados.
 
 Mismo procedimiento que en Lovable Cloud, en el SQL Editor del proyecto licenciado.
 
