@@ -223,3 +223,49 @@ def test_failed_transaction_is_rolled_back(database):
             return len(await _all_organizations(session))
 
     assert run(count()) == 0
+
+
+def test_check_constraint_names_match_the_models(test_database_url):
+    # Regression: revision 0001 produced doubled and truncated CHECK names; 0002 renames them to the model names.
+    async def names() -> set[str]:
+        engine = create_async_engine(test_database_url, poolclass=NullPool)
+        try:
+            async with engine.connect() as connection:
+                rows = await connection.execute(
+                    text("SELECT conname FROM pg_constraint WHERE connamespace = 'public'::regnamespace AND contype = 'c'")
+                )
+                return {row[0] for row in rows}
+        finally:
+            await engine.dispose()
+
+    assert run(names()) == {
+        "ck_organizations_slug_format",
+        "ck_organizations_status_valid",
+        "ck_organization_memberships_role_valid",
+    }
+
+
+def test_row_level_security_is_enabled_without_policies(test_database_url):
+    # Roles exposed by managed APIs must see nothing until policies are written and verified.
+    async def state() -> list[tuple[str, bool]]:
+        engine = create_async_engine(test_database_url, poolclass=NullPool)
+        try:
+            async with engine.connect() as connection:
+                rows = await connection.execute(
+                    text(
+                        "SELECT relname, relrowsecurity FROM pg_class "
+                        "WHERE relnamespace = 'public'::regnamespace "
+                        "AND relname IN ('organizations', 'app_users', 'organization_memberships') ORDER BY relname"
+                    )
+                )
+                policies = await connection.scalar(text("SELECT count(*) FROM pg_policies WHERE schemaname = 'public'"))
+                return [(row[0], row[1]) for row in rows] + [("policies", policies == 0)]
+        finally:
+            await engine.dispose()
+
+    assert run(state()) == [
+        ("app_users", True),
+        ("organization_memberships", True),
+        ("organizations", True),
+        ("policies", True),
+    ]
