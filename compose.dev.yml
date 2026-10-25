@@ -1,0 +1,77 @@
+# Development only. Always combine it explicitly:
+#   docker compose -f docker-compose.yml -f compose.dev.yml up -d
+# docker-compose.yml alone never starts a PostgreSQL container; production uses a managed database.
+name: rckt-campaign-analyst
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rckt}
+      POSTGRES_USER: ${POSTGRES_USER:-rckt}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - rckt-pgdata:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    # Containers reach the database on the private network. The host gets loopback-only access
+    # for local end-to-end tests; nothing is published on public interfaces.
+    expose:
+      - "5432"
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-55432}:5432"
+    security_opt:
+      - no-new-privileges:true
+
+  migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: rckt-campaign-analyst-backend:local
+    command: ["alembic", "upgrade", "head"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-rckt}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-rckt}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  backend:
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-rckt}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-rckt}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # Runs the backend test suite against the Compose PostgreSQL, under Python 3.12.
+  # Usage: docker compose --profile test run --rm tests
+  tests:
+    image: python:3.12-slim
+    profiles: ["test"]
+    working_dir: /app
+    volumes:
+      - ./backend:/app:ro
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      TEST_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-rckt}:${POSTGRES_PASSWORD}@db:5432/rckt_test
+    command: ["sh", "-c", "pip install -q --disable-pip-version-check -r requirements-dev.txt && python -m pytest -q -p no:cacheprovider tests"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+volumes:
+  rckt-pgdata:

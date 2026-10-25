@@ -1,0 +1,111 @@
+"""Operator procedures. Run on the server, never exposed over HTTP.
+
+Examples (DATABASE_URL or DATABASE_MIGRATION_URL must point to the target database):
+  python -m app.cli create-organization --name "Cliente Uno" --slug cliente-uno
+  python -m app.cli grant-membership --organization-slug cliente-uno --email ana@cliente.com --role analyst
+  python -m app.cli grant-membership --organization-slug rckt-internal --email owner@rckt.es --role owner
+
+A user appears in app_users after their first successful sign-in. Until then, grant-membership
+cannot find them by email; the operator can also use --subject with the provider's user id.
+"""
+
+import argparse
+import asyncio
+import os
+import sys
+import uuid
+
+from sqlalchemy import select
+
+from app.core.config import DatabaseSettings, get_database_settings
+from app.db.models import AppUser, Organization
+from app.db.repositories import MembershipRepository, OrganizationRepository, UserRepository
+from app.db.session import Database
+from app.domain.access import Role
+
+
+def _database() -> Database:
+    env_name = "DATABASE_MIGRATION_URL" if os.environ.get("DATABASE_MIGRATION_URL") else "DATABASE_URL"
+    settings = get_database_settings(env_name)
+    if settings is None:
+        raise SystemExit("Set DATABASE_URL (or DATABASE_MIGRATION_URL) to the target database.")
+    return Database(DatabaseSettings(
+        url=settings.url, pool_size=1, max_overflow=0, connect_timeout_seconds=settings.connect_timeout_seconds,
+    ))
+
+
+async def create_organization(name: str, slug: str) -> str:
+    database = _database()
+    try:
+        async with database.session() as session:
+            organization = await OrganizationRepository(session).create(name=name, slug=slug)
+            return f"created organization {organization.slug} ({organization.id})"
+    finally:
+        await database.dispose()
+
+
+async def provision_user(subject: str, email: str | None) -> str:
+    database = _database()
+    try:
+        async with database.session() as session:
+            user = await UserRepository(session).get_or_create_by_subject(external_subject=subject, email=email)
+            return f"identity ready for user {user.id} (no organization access granted)"
+    finally:
+        await database.dispose()
+
+
+async def grant_membership(organization_slug: str, role: Role, subject: str | None, email: str | None) -> str:
+    if (subject is None) == (email is None):
+        raise SystemExit("Provide exactly one of --subject or --email.")
+    database = _database()
+    try:
+        async with database.session() as session:
+            organization = await session.scalar(select(Organization).where(Organization.slug == organization_slug))
+            if organization is None:
+                raise SystemExit("organization not found")
+            if subject is not None:
+                user = await UserRepository(session).get_by_subject(subject)
+            else:
+                user = await session.scalar(select(AppUser).where(AppUser.email == email.strip().lower()))
+            if user is None:
+                raise SystemExit("user not found: the person must sign in once first, or provision-user must run")
+            existing = await MembershipRepository(session).get_for_user(organization_id=organization.id, user_id=user.id)
+            if existing is not None:
+                raise SystemExit("membership already exists; change roles with a new procedure, not by duplication")
+            await MembershipRepository(session).add(organization_id=organization.id, user_id=user.id, role=role)
+            return f"granted {role.value} to user {user.id} in {organization.slug}"
+    finally:
+        await database.dispose()
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="app.cli", description="RCKT operator procedures")
+    commands = parser.add_subparsers(dest="command", required=True)
+
+    create = commands.add_parser("create-organization")
+    create.add_argument("--name", required=True)
+    create.add_argument("--slug", required=True)
+
+    provision = commands.add_parser("provision-user")
+    provision.add_argument("--subject", required=True)
+    provision.add_argument("--email")
+
+    grant = commands.add_parser("grant-membership")
+    grant.add_argument("--organization-slug", required=True)
+    grant.add_argument("--role", required=True, type=Role)
+    grant.add_argument("--subject")
+    grant.add_argument("--email")
+
+    args = parser.parse_args(argv)
+    if args.command == "create-organization":
+        message = asyncio.run(create_organization(args.name, args.slug))
+    elif args.command == "provision-user":
+        message = asyncio.run(provision_user(args.subject, args.email))
+    else:
+        message = asyncio.run(grant_membership(args.organization_slug, args.role, args.subject, args.email))
+    print(message)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

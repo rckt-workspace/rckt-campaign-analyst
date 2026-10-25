@@ -1,0 +1,44 @@
+name: rckt-campaign-analyst
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: rckt-campaign-analyst-frontend:local
+    restart: unless-stopped
+    init: true
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3000"
+      FASTAPI_INTERNAL_URL: http://backend:8000
+      # Server-side only. The publishable key is not a secret, but it still stays out of the browser bundle.
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+    ports:
+      - "${APP_BIND_IP:-127.0.0.1}:${APP_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: rckt-campaign-analyst-backend:local
+    restart: unless-stopped
+    init: true
+    env_file:
+      - path: .env
+        required: false
+    expose:
+      - "8000"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

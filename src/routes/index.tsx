@@ -1,6 +1,5 @@
 import { useCallback, useRef, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
-import { useServerFn } from "@tanstack/react-start";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { AppHeader } from "@/components/campaign/AppHeader";
 import { HeroIntro } from "@/components/campaign/HeroIntro";
 import { CampaignInputPanel } from "@/components/campaign/CampaignInputPanel";
@@ -8,11 +7,27 @@ import {
   ExecutiveReportPanel,
   type AnalysisStatus,
 } from "@/components/campaign/ExecutiveReportPanel";
-import { analyzeCampaign } from "@/lib/campaign-analysis.functions";
+import { getAccount, signOut } from "@/lib/auth.functions";
+import { ANALYSIS_ERRORS } from "@/lib/analysis-errors";
+import { analyzeCampaign } from "@/lib/campaign-api.functions";
 import type { NormalizedCampaign } from "@/lib/campaign-metrics";
 import { analyzeMetrics } from "@/lib/metrics-engine";
 
+const NOTICES: Partial<Record<string, string>> = {
+  [ANALYSIS_ERRORS.FORBIDDEN]:
+    "Tu rol permite consultar los informes de tu organización, pero no generar análisis nuevos.",
+  [ANALYSIS_ERRORS.NO_ORGANIZATION]:
+    "Tu cuenta todavía no tiene acceso a ninguna organización. Solicita la asignación a tu contacto en RCKT.",
+};
+
 export const Route = createFileRoute("/")({
+  beforeLoad: async () => {
+    // Protected route: without a valid session the user never sees the application. Server functions
+    // also verify the session on every call, so this check is not the only barrier.
+    const account = await getAccount();
+    if (!account) throw redirect({ to: "/login", search: { expired: false } });
+    return { account };
+  },
   head: () => ({
     meta: [
       { title: "RCKT Campaign Analyst — Análisis ejecutivo de campañas" },
@@ -35,10 +50,12 @@ export const Route = createFileRoute("/")({
 });
 
 function Index() {
-  const runAnalysis = useServerFn(analyzeCampaign);
+  const { account } = Route.useRouteContext();
+  const navigate = useNavigate();
   const [status, setStatus] = useState<AnalysisStatus>("idle");
   const [analysis, setAnalysis] = useState<string | null>(null);
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
   const lastPayload = useRef<NormalizedCampaign | null>(null);
   const inFlight = useRef(false);
 
@@ -49,34 +66,55 @@ function Index() {
       lastPayload.current = data;
       setStatus("loading");
       setAnalysis(null);
+      setNotice(null);
       setDataWarnings(
         analyzeMetrics(data)
           .warnings.filter((warning) => warning.severity !== "info")
           .map((warning) => warning.message),
       );
       try {
-        const result = await runAnalysis({ data });
+        const result = await analyzeCampaign({ data: { data } });
         setAnalysis(result.analysis);
         setStatus("success");
       } catch (error) {
-        console.error("Fallo el análisis de campaña", error);
+        const code = error instanceof Error ? error.message : "";
+        if (code === ANALYSIS_ERRORS.SESSION_EXPIRED) {
+          // The session is gone: nothing is retried and no provider call is made.
+          await navigate({ to: "/login", search: { expired: true } });
+          return;
+        }
+        console.error("Fallo el análisis de campaña", code);
+        setNotice(NOTICES[code] ?? null);
         setStatus("error");
       } finally {
         inFlight.current = false;
       }
     },
-    [runAnalysis],
+    [navigate],
   );
 
   const retry = useCallback(() => {
     if (lastPayload.current) void analyze(lastPayload.current);
   }, [analyze]);
 
+  const handleSignOut = useCallback(async () => {
+    await signOut();
+    await navigate({ to: "/login", search: { expired: false } });
+  }, [navigate]);
+
   return (
     <div className="min-h-screen bg-background">
-      <AppHeader />
+      <AppHeader email={account.email} onSignOut={() => void handleSignOut()} />
       <main className="pb-16">
         <HeroIntro />
+        {notice ? (
+          <div
+            role="alert"
+            className="mx-auto mb-5 max-w-7xl rounded-xl border border-border bg-surface-elevated px-5 py-3 text-sm text-foreground md:px-8"
+          >
+            {notice}
+          </div>
+        ) : null}
         <div className="mx-auto grid max-w-7xl gap-5 px-5 md:px-8 lg:grid-cols-2 lg:gap-6">
           <CampaignInputPanel
             isAnalyzing={status === "loading"}

@@ -30,3 +30,23 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Local secrets / production configuration
+.env
+.env.*
+!.env.example
+.dev.vars.*
+*.pem
+*.key
+
+# Python caches
+__pycache__/
+.pytest_cache/
+
+# Playwright
+test-results/
+playwright-report/
+
+# End-to-end test sessions (contain cookies)
+e2e/.auth/
+e2e/.frontend.log

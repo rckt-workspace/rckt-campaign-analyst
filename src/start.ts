@@ -1,9 +1,11 @@
 import { createStart, createCsrfMiddleware, createMiddleware } from "@tanstack/react-start";
+import { setResponseHeader } from "@tanstack/react-start/server";
 
 import { renderErrorPage } from "./lib/error-page";
-import { attachSupabaseAuth } from "@/integrations/supabase/auth-attacher";
 
 const errorMiddleware = createMiddleware().server(async ({ next }) => {
+  // Every response depends on who is signed in, so no shared cache may store it.
+  setResponseHeader("Cache-Control", "no-store");
   try {
     return await next();
   } catch (error) {
@@ -26,6 +28,5 @@ const csrfMiddleware = createCsrfMiddleware({
 });
 
 export const startInstance = createStart(() => ({
-  functionMiddleware: [attachSupabaseAuth],
   requestMiddleware: [errorMiddleware, csrfMiddleware],
 }));
