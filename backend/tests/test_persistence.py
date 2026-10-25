@@ -13,7 +13,7 @@ from sqlalchemy.pool import NullPool
 
 from app.db.base import Base
 from app.db.repositories import MembershipRepository, OrganizationRepository, UserRepository
-from app.domain.access import MANAGE_CAMPAIGN_ROLES, PAID_AI_ROLES, Role
+from app.domain.access import PAID_AI_ROLES, RECORD_CAMPAIGN_ROLES, Role
 from app.services.access import OrganizationNotFoundError, PermissionDeniedError, require_role
 from tests.conftest import alembic_config, run
 
@@ -151,9 +151,9 @@ def test_memberships_scope_access_to_their_own_organizations(database):
         async with database.session() as session:
             listed = await OrganizationRepository(session).list_for_user(user_id)
             org_b_id = next(o.id for o in await _all_organizations(session) if o.slug == "cliente-b")
-            await require_role(session, organization_id=org_a_id, user_id=user_id, allowed=MANAGE_CAMPAIGN_ROLES)
+            await require_role(session, organization_id=org_a_id, user_id=user_id, allowed=RECORD_CAMPAIGN_ROLES)
             with pytest.raises(OrganizationNotFoundError):
-                await require_role(session, organization_id=org_b_id, user_id=user_id, allowed=MANAGE_CAMPAIGN_ROLES)
+                await require_role(session, organization_id=org_b_id, user_id=user_id, allowed=RECORD_CAMPAIGN_ROLES)
             with pytest.raises(PermissionDeniedError):
                 await require_role(session, organization_id=org_a_id, user_id=user_id, allowed={Role.OWNER})
             return [o.slug for o in listed]

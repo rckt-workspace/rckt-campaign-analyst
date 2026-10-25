@@ -13,8 +13,10 @@ ROLE_VALUES = tuple(role.value for role in Role)
 
 # Roles that may read organization data and campaign history.
 VIEW_ROLES = frozenset(Role)
-# Roles that may create or edit campaigns and their metric entries.
-MANAGE_CAMPAIGN_ROLES = frozenset({Role.OWNER, Role.ANALYST})
+# Roles that may create campaigns and append metric entries. Entries are never edited or deleted.
+RECORD_CAMPAIGN_ROLES = frozenset({Role.OWNER, Role.ANALYST})
+# Roles that may edit or archive campaigns. Campaign lifecycle belongs to owners only.
+CAMPAIGN_ADMIN_ROLES = frozenset({Role.OWNER})
 # Roles that may start a request that consumes paid model tokens. client_viewer never can.
 PAID_AI_ROLES = frozenset({Role.OWNER, Role.ANALYST})
 # Roles that may manage members, invitations and usage reports.
