@@ -88,3 +88,29 @@ en el navegador; si alguno no cabe en su columna, la API responde `422 CAMPAIGN_
 - **Sin políticas RLS:** las tablas mantienen RLS activado sin políticas, como en la migración existente. El acceso
   pasa por FastAPI con la membresía verificada.
 - **Lovable Cloud:** no se ejecutó SQL ni migraciones. No hay cambios de esquema pendientes de revisión.
+
+
+## 7. Interpretación numérica (texto pegado, formulario y periodo anterior)
+
+Implementada en `src/lib/metric-number.ts`, usada por `src/lib/campaign-metrics.ts` para los tres orígenes de datos.
+Nunca se sustituye un valor inválido por cero, null ni otro número. Un valor no legible queda como incidencia con su
+texto original; mientras existan incidencias, la interfaz no analiza ni guarda.
+
+Reglas:
+- **Dos separadores:** el último es el decimal y el otro debe agrupar miles en bloques de tres (`1.234,56`, `1,234.56`).
+- **Un separador seguido de dos cifras** es decimal (`2,47`, `2.10%`).
+- **Un separador seguido de tres cifras** es ambiguo (`1234,567`, `1,234`, `4.850`), salvo dos casos en los que
+  la otra lectura es imposible: un conteo no admite decimales, y un importe con `$` o `COP` agrupa miles con punto
+  (`$9.291`, `COP 1.234`). Ninguna lectura alternativa sin esas condiciones.
+- **Símbolos** (`$`, `COP`, `€`, `USD`, `EUR`) y `%` se ignoran. Espacios dentro del número no se aceptan.
+- **Precisión por tipo de métrica**, igual que las columnas de PostgreSQL: importes 12 enteros y 2 decimales; costos
+  unitarios 10 y 4; ratios 8 y 4; porcentaje 5 y 4; conteos enteros de hasta 15 cifras.
+- **Exactitud:** el número debe volver a imprimirse con los mismos dígitos. Un valor que `Number` no representaría
+  exactamente se rechaza.
+- **Negativos y malformados** se rechazan.
+
+Motivos de incidencia: `ambiguous`, `too_many_decimals`, `too_large`, `fractional_count`, `negative`, `malformed`.
+Cada aviso indica el campo (incluido «(periodo anterior)»), el texto original y qué corregir.
+
+Pruebas: `src/lib/metric-number.test.ts` y `src/lib/campaign-metrics.test.ts` (ejecutar con `npm run test:unit`,
+sin dependencias nuevas: usa `node:test` y `esbuild`, ya incluido por Vite), y `e2e/number-parsing.spec.ts`.

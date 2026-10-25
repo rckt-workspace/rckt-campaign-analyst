@@ -113,6 +113,7 @@ function Index() {
 
   const save = useCallback(
     async (data: NormalizedCampaign, source: "text" | "form") => {
+      if (data.issues.length > 0) return;
       setSaving(true);
       setSaveResult(null);
       try {
@@ -136,7 +137,8 @@ function Index() {
 
   const analyze = useCallback(
     async (data: NormalizedCampaign) => {
-      if (inFlight.current) return;
+      // Defense in depth: the input panel already blocks ambiguous numbers.
+      if (data.issues.length > 0 || inFlight.current) return;
       inFlight.current = true;
       lastPayload.current = data;
       setStatus("loading");

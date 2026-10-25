@@ -1,7 +1,18 @@
 /**
  * Normalización de métricas de campaña.
  * Solo existe en memoria durante la sesión: sin persistencia, sin backend.
+ *
+ * Los números se leen con una interpretación estricta (ver metric-number.ts). Un valor ambiguo o inválido no se
+ * convierte ni se sustituye: queda como `null` en el campo y registrado en `issues`, y la interfaz impide analizar
+ * o guardar mientras existan incidencias.
  */
+
+import {
+  describeMetricIssue,
+  readMetricNumber,
+  type MetricIssueReason,
+  type MetricKind,
+} from "./metric-number";
 
 export type CampaignFormFields = {
   campaign: string;
@@ -21,6 +32,18 @@ export type CampaignFormFields = {
   revenue: string;
   roas: string;
   additionalContext: string;
+};
+
+/** A number the user wrote that could not be read safely. The original text is kept for the message. */
+export type MetricIssue = {
+  /** Campo afectado: "investment" o "previous.ctr" para el periodo anterior. */
+  field: string;
+  /** Nombre visible del campo en el aviso. */
+  label: string;
+  /** Texto original, tal como lo escribió el usuario. */
+  raw: string;
+  reason: MetricIssueReason;
+  kind: MetricKind;
 };
 
 export type NormalizedCampaign = {
@@ -44,6 +67,8 @@ export type NormalizedCampaign = {
   rawInput: string;
   /** Valores del periodo anterior, cuando el usuario los suministra. */
   previous: PreviousMetrics;
+  /** Valores que no pudieron leerse con seguridad. Si hay alguno, no se analiza ni se guarda. */
+  issues: MetricIssue[];
 };
 
 export type MetricKey =
@@ -61,6 +86,42 @@ export type MetricKey =
   | "roas";
 
 export type PreviousMetrics = Partial<Record<MetricKey, number | undefined>>;
+
+/** Tipo de precisión de cada métrica, igual que la columna que la guarda en PostgreSQL. */
+export const METRIC_KIND: Record<MetricKey, MetricKind> = {
+  investment: "money",
+  revenue: "money",
+  cpc: "unit_cost",
+  cpl: "unit_cost",
+  frequency: "ratio",
+  roas: "ratio",
+  ctr: "percent",
+  impressions: "count",
+  reach: "count",
+  clicks: "count",
+  leads: "count",
+  conversions: "count",
+};
+
+export const METRIC_LABEL: Record<MetricKey, string> = {
+  investment: "Inversión",
+  impressions: "Impresiones",
+  reach: "Alcance",
+  frequency: "Frecuencia",
+  clicks: "Clics",
+  ctr: "CTR",
+  cpc: "CPC",
+  leads: "Leads",
+  cpl: "CPL",
+  conversions: "Ventas",
+  revenue: "Ingresos atribuidos",
+  roas: "ROAS",
+};
+
+/** Aviso completo para un campo: nombre, texto original y motivo. Nunca muestra un valor de reemplazo. */
+export function describeIssue(issue: MetricIssue): string {
+  return `${issue.label}: «${issue.raw}». ${describeMetricIssue(issue.reason, issue.kind)}`;
+}
 
 export const EMPTY_FORM: CampaignFormFields = {
   campaign: "",
@@ -131,68 +192,39 @@ export const EXAMPLE_FORM: CampaignFormFields = {
     "El cliente quiere aumentar ventas sin deteriorar demasiado el costo de adquisición. No existen todavía resultados separados por anuncio, audiencia o ubicación.\n\nPeriodo anterior: CTR 1,65% · CPC $720 · CPL $12.500 · ROAS 1,95",
 };
 
-/**
- * Convierte formatos latinos y anglosajones a número.
- * "$4.850.000 COP" -> 4850000 · "2,47" -> 2.47 · "2.10%" -> 2.1 · "1,234.56" -> 1234.56
- */
-export function parseLocaleNumber(input: string): number | null {
-  if (typeof input !== "string") return null;
-  const cleaned = input
-    .replace(/%/g, "")
-    .replace(/[^\d.,-]/g, "")
-    .trim();
-  if (!cleaned || !/\d/.test(cleaned)) return null;
-
-  const negative = cleaned.startsWith("-");
-  let body = cleaned.replace(/-/g, "");
-
-  const lastComma = body.lastIndexOf(",");
-  const lastDot = body.lastIndexOf(".");
-
-  const groupsOfThree = (value: string, sep: string) =>
-    new RegExp(`^\\d{1,3}(\\${sep}\\d{3})+$`).test(value);
-
-  if (lastComma !== -1 && lastDot !== -1) {
-    // El separador más a la derecha es el decimal.
-    if (lastComma > lastDot) {
-      body = body.replace(/\./g, "").replace(",", ".");
-    } else {
-      body = body.replace(/,/g, "");
-    }
-  } else if (lastComma !== -1) {
-    const decimals = body.length - lastComma - 1;
-    if (groupsOfThree(body, ",")) {
-      body = body.replace(/,/g, ""); // 1,234 / 4,850,000 -> miles
-    } else if (decimals > 0 && decimals <= 2) {
-      body = body.replace(",", "."); // 2,47 -> decimal
-    } else {
-      body = body.replace(/,/g, "");
-    }
-  } else if (lastDot !== -1) {
-    const decimals = body.length - lastDot - 1;
-    if (groupsOfThree(body, ".")) {
-      body = body.replace(/\./g, ""); // 4.850.000 -> miles
-    } else if (decimals === 3 && body.split(".").length === 2) {
-      // Ambiguo (ej. 4.850): en formato latino suele ser miles.
-      body = body.replace(/\./g, "");
-    } else {
-      body = body.replace(/,/g, "");
-    }
-  }
-
-  const parsed = Number(body);
-  if (!Number.isFinite(parsed)) return null;
-  return negative ? -parsed : parsed;
-}
-
 const trimOrNull = (value: string) => {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
 };
 
-const numOrNull = (value: string) => (value.trim() ? parseLocaleNumber(value) : null);
+/**
+ * Lee una métrica numérica. Devuelve el valor, o null si está vacía o si es inválida; en este último caso registra
+ * la incidencia con el texto original.
+ */
+function readMetric(
+  key: MetricKey,
+  raw: string,
+  issues: MetricIssue[],
+  previous = false,
+): number | null {
+  const reading = readMetricNumber(raw, METRIC_KIND[key]);
+  if (reading.status === "ok") return reading.value;
+  if (reading.status === "invalid") {
+    issues.push({
+      field: previous ? `previous.${key}` : key,
+      label: previous ? `${METRIC_LABEL[key]} (periodo anterior)` : METRIC_LABEL[key],
+      raw: raw.trim(),
+      reason: reading.reason,
+      kind: METRIC_KIND[key],
+    });
+  }
+  return null;
+}
 
-const LABELS: Record<Exclude<keyof NormalizedCampaign, "rawInput" | "previous">, string[]> = {
+const LABELS: Record<
+  Exclude<keyof NormalizedCampaign, "rawInput" | "previous" | "issues">,
+  string[]
+> = {
   campaign: ["campaña", "campana", "campaign", "nombre de campaña"],
   channel: ["canal", "channel", "plataforma"],
   objective: ["objetivo", "objective", "meta"],
@@ -217,7 +249,7 @@ const TEXT_KEYS = ["campaign", "channel", "objective", "period"] as const;
 const PREVIOUS_MARKER = /(periodo|período)\s+(anterior|previo)/i;
 const PREVIOUS_SUFFIX = /\b(anterior|previo|previous|pasado)\b/i;
 
-function parseRawInput(raw: string): Partial<NormalizedCampaign> {
+function parseRawInput(raw: string, issues: MetricIssue[]): Partial<NormalizedCampaign> {
   const result: Partial<NormalizedCampaign> = {};
   const previous: PreviousMetrics = {};
   const lines = raw.split(/\r?\n/);
@@ -251,7 +283,7 @@ function parseRawInput(raw: string): Partial<NormalizedCampaign> {
       const cleanLabel = label.replace(PREVIOUS_SUFFIX, "").replace(/\s+/g, " ").trim();
       const key = matchMetricKey(cleanLabel);
       if (key) {
-        const parsed = parseLocaleNumber(value);
+        const parsed = readMetric(key, value, issues, true);
         if (parsed !== null && previous[key] === undefined) previous[key] = parsed;
         inAdditional = false;
         continue;
@@ -283,7 +315,7 @@ function parseRawInput(raw: string): Partial<NormalizedCampaign> {
     if ((TEXT_KEYS as readonly string[]).includes(matchedKey)) {
       (result as Record<string, unknown>)[matchedKey] = value || null;
     } else {
-      const parsed = parseLocaleNumber(value);
+      const parsed = readMetric(matchedKey as MetricKey, value, issues);
       if (parsed !== null) (result as Record<string, unknown>)[matchedKey] = parsed;
     }
     inAdditional = false;
@@ -321,6 +353,7 @@ export function normalizeCampaign(
   raw: string,
   form: CampaignFormFields,
 ): NormalizedCampaign {
+  const issues: MetricIssue[] = [];
   const base: NormalizedCampaign = {
     campaign: null,
     channel: null,
@@ -341,10 +374,11 @@ export function normalizeCampaign(
     additionalContext: null,
     rawInput: "",
     previous: {},
+    issues,
   };
 
   if (mode === "paste") {
-    return { ...base, ...parseRawInput(raw), rawInput: raw.trim() };
+    return { ...base, ...parseRawInput(raw, issues), rawInput: raw.trim(), issues };
   }
 
   const rawFromForm = Object.entries(form)
@@ -358,27 +392,33 @@ export function normalizeCampaign(
     channel: trimOrNull(form.channel),
     objective: trimOrNull(form.objective),
     period: trimOrNull(form.period),
-    investment: numOrNull(form.investment),
-    impressions: numOrNull(form.impressions),
-    reach: numOrNull(form.reach),
-    frequency: numOrNull(form.frequency),
-    clicks: numOrNull(form.clicks),
-    ctr: numOrNull(form.ctr),
-    cpc: numOrNull(form.cpc),
-    leads: numOrNull(form.leads),
-    cpl: numOrNull(form.cpl),
-    conversions: numOrNull(form.conversions),
-    revenue: numOrNull(form.revenue),
-    roas: numOrNull(form.roas),
+    investment: readMetric("investment", form.investment, issues),
+    impressions: readMetric("impressions", form.impressions, issues),
+    reach: readMetric("reach", form.reach, issues),
+    frequency: readMetric("frequency", form.frequency, issues),
+    clicks: readMetric("clicks", form.clicks, issues),
+    ctr: readMetric("ctr", form.ctr, issues),
+    cpc: readMetric("cpc", form.cpc, issues),
+    leads: readMetric("leads", form.leads, issues),
+    cpl: readMetric("cpl", form.cpl, issues),
+    conversions: readMetric("conversions", form.conversions, issues),
+    revenue: readMetric("revenue", form.revenue, issues),
+    roas: readMetric("roas", form.roas, issues),
     additionalContext: trimOrNull(form.additionalContext),
     rawInput: rawFromForm,
+    issues,
   };
 }
 
-/** Cantidad de campos con información útil (excluye rawInput). */
+/** Cantidad de campos con información útil (excluye rawInput, previous e issues). */
 export function countFilledFields(data: NormalizedCampaign): number {
   return Object.entries(data).filter(
-    ([key, value]) => key !== "rawInput" && key !== "previous" && value !== null && value !== "",
+    ([key, value]) =>
+      key !== "rawInput" &&
+      key !== "previous" &&
+      key !== "issues" &&
+      value !== null &&
+      value !== "",
   ).length;
 }
 

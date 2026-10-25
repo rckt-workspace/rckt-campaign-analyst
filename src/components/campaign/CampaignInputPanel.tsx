@@ -18,6 +18,7 @@ import {
   EXAMPLE_FORM,
   EXAMPLE_RAW,
   countFilledFields,
+  describeIssue,
   isEmptyInput,
   normalizeCampaign,
   type CampaignFormFields,
@@ -63,7 +64,9 @@ export function CampaignInputPanel({
   const filled = countFilledFields(normalized);
   // En texto libre basta un input con contenido suficiente aunque no venga etiquetado.
   const freeText = mode === "paste" && rawValue.trim().length >= 40;
-  const canAnalyze = !empty && (filled >= 2 || freeText);
+  // Ambiguous or unreadable numbers block analysis and saving until the user corrects them.
+  const blocked = normalized.issues.length > 0;
+  const canAnalyze = !empty && !blocked && (filled >= 2 || freeText);
   const scarce = !empty && filled > 0 && filled < 5;
 
   const handleFormChange = (key: keyof CampaignFormFields, value: string) => {
@@ -85,6 +88,7 @@ export function CampaignInputPanel({
       setPrepared(null);
       return;
     }
+    if (blocked) return;
     setEmptyNotice(false);
     setPrepared(normalized);
     onAnalyze?.(normalized);
@@ -95,6 +99,7 @@ export function CampaignInputPanel({
       setEmptyNotice(true);
       return;
     }
+    if (blocked) return;
     setEmptyNotice(false);
     onSave?.(normalized, mode === "paste" ? "text" : "form");
   };
@@ -162,6 +167,14 @@ export function CampaignInputPanel({
             text="Agrega algunas métricas para comenzar el análisis."
           />
         ) : null}
+        {normalized.issues.map((issue) => (
+          <Notice
+            key={issue.field}
+            tone="warn"
+            icon={<AlertCircle className="h-4 w-4" aria-hidden="true" />}
+            text={describeIssue(issue)}
+          />
+        ))}
         {scarce ? (
           <Notice
             tone="info"
