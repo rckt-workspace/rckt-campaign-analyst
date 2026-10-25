@@ -242,6 +242,14 @@ def test_check_constraint_names_match_the_models(test_database_url):
         "ck_organizations_slug_format",
         "ck_organizations_status_valid",
         "ck_organization_memberships_role_valid",
+        "ck_campaigns_name_not_blank",
+        "ck_campaigns_currency_format",
+        "ck_campaigns_period_order",
+        "ck_campaign_metric_entries_source_valid",
+        "ck_campaign_metric_entries_raw_input_length",
+        "ck_campaign_metric_entries_period_order",
+        "ck_campaign_metric_entries_previous_is_object",
+        "ck_campaign_metric_entries_non_negative",
     }
 
 

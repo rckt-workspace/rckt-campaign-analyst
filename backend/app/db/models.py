@@ -7,9 +7,27 @@ Conventions (see docs/PHASE2_FOUNDATION.md):
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
+from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, String, UniqueConstraint, Uuid, func, text
+from sqlalchemy import (
+    CHAR,
+    BigInteger,
+    CheckConstraint,
+    Date,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -87,4 +105,96 @@ class OrganizationMembership(Base):
         nullable=False,
     )
     role: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class Campaign(Base):
+    """A marketing campaign owned by one organization. Archived campaigns keep their history."""
+
+    __tablename__ = "campaigns"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_campaigns_organization_id_id"),
+        ForeignKeyConstraint(
+            ["organization_id"], ["organizations.id"], name="fk_campaigns_organization_id", ondelete="RESTRICT"
+        ),
+        ForeignKeyConstraint(["created_by"], ["app_users.id"], name="fk_campaigns_created_by", ondelete="RESTRICT"),
+        CheckConstraint("length(btrim(name)) > 0", name="name_not_blank"),
+        CheckConstraint("currency ~ '^[A-Z]{3}$'", name="currency_format"),
+        CheckConstraint(
+            "period_start IS NULL OR period_end IS NULL OR period_end >= period_start", name="period_order"
+        ),
+        Index("ix_campaigns_organization_id_created_at", "organization_id", text("created_at DESC")),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    name: Mapped[str] = mapped_column(String(2000), nullable=False)
+    channel: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    objective: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    period_label: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    currency: Mapped[str] = mapped_column(CHAR(3), nullable=False, server_default="COP")
+    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    archived_at: Mapped[date | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CampaignMetricEntry(Base):
+    """One append-only record of metrics for a campaign. Corrections are new entries. Enforced by a trigger."""
+
+    __tablename__ = "campaign_metric_entries"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "campaign_id"],
+            ["campaigns.organization_id", "campaigns.id"],
+            name="fk_campaign_metric_entries_campaign_scope",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["created_by"], ["app_users.id"], name="fk_campaign_metric_entries_created_by", ondelete="RESTRICT"
+        ),
+        CheckConstraint("source IN ('form', 'text')", name="source_valid"),
+        CheckConstraint("char_length(raw_input) <= 12000", name="raw_input_length"),
+        CheckConstraint(
+            "period_start IS NULL OR period_end IS NULL OR period_end >= period_start", name="period_order"
+        ),
+        CheckConstraint("jsonb_typeof(previous_metrics) = 'object'", name="previous_is_object"),
+        CheckConstraint(
+            "(investment IS NULL OR investment >= 0) AND (impressions IS NULL OR impressions >= 0)"
+            " AND (reach IS NULL OR reach >= 0) AND (frequency IS NULL OR frequency >= 0)"
+            " AND (clicks IS NULL OR clicks >= 0) AND (ctr IS NULL OR ctr >= 0) AND (cpc IS NULL OR cpc >= 0)"
+            " AND (leads IS NULL OR leads >= 0) AND (cpl IS NULL OR cpl >= 0)"
+            " AND (conversions IS NULL OR conversions >= 0) AND (revenue IS NULL OR revenue >= 0)"
+            " AND (roas IS NULL OR roas >= 0)",
+            name="non_negative",
+        ),
+        Index("ix_campaign_metric_entries_campaign_created", "organization_id", "campaign_id", text("created_at DESC")),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    campaign_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    raw_input: Mapped[str] = mapped_column(Text, nullable=False)
+    period_label: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+    period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
+    investment: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    impressions: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reach: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    frequency: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    clicks: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    ctr: Mapped[Decimal | None] = mapped_column(Numeric(9, 4), nullable=True)
+    cpc: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    leads: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cpl: Mapped[Decimal | None] = mapped_column(Numeric(14, 4), nullable=True)
+    conversions: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    revenue: Mapped[Decimal | None] = mapped_column(Numeric(14, 2), nullable=True)
+    roas: Mapped[Decimal | None] = mapped_column(Numeric(12, 4), nullable=True)
+    previous_metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_by: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = _created_at()

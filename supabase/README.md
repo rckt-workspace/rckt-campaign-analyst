@@ -2,15 +2,18 @@
 
 Esta carpeta contiene el esquema empresarial como SQL plano de PostgreSQL. Sirve para aplicarlo a mano en el SQL Editor de Lovable Cloud y, más adelante, en un Supabase licenciado. Es el **mismo esquema** que mantiene Alembic en `backend/migrations`, y las dos cosas se verifican entre sí (sección 5).
 
-Nada de esto se ha ejecutado contra una base remota. Esa ejecución la hace el responsable de RCKT, a mano, después de revisar los archivos.
+Las migraciones las ejecuta el responsable de RCKT, a mano, en Lovable Cloud o en Supabase, después de revisar los archivos. Este repositorio nunca ejecuta SQL contra una base remota.
+
+Estado conocido: la migración de fundación ya fue ejecutada en Lovable Cloud por el responsable (informado; la fecha no está registrada en `applied-migrations.md`).
 
 ## 1. Orden de migraciones
 
 | Orden | Archivo | Contenido | Equivalente Alembic |
 |---|---|---|---|
 | 1 | `migrations/20261025000100_foundation.sql` | Tablas `organizations`, `app_users`, `organization_memberships`; restricciones, índice, RLS activado sin políticas | `0001_foundation` + `0002_constraint_names_and_rls` |
+| 2 | `migrations/20261025000200_campaigns.sql` | Tablas `campaigns` y `campaign_metric_entries`; claves compuestas por organización, historial inmutable, RLS activado sin políticas | `0003_campaigns` |
 
-Se ejecuta **una sola vez por base de datos**. Sin `IF NOT EXISTS` a propósito: si ya existe alguna tabla, el script falla y no sobrescribe nada.
+Las migraciones se ejecutan **en ese orden y una sola vez por base de datos**. La 2 requiere la 1. Sin `IF NOT EXISTS` a propósito: si ya existe alguna tabla, el script falla y no sobrescribe nada.
 
 Archivos de apoyo, que **no** se ejecutan para aplicar cambios:
 - `verification.sql`: consultas de solo lectura para comprobar el resultado.
@@ -24,7 +27,13 @@ Archivos de apoyo, que **no** se ejecutan para aplicar cambios:
 
 ## 3. Procedimiento en Lovable Cloud (SQL Editor)
 
-Hipótesis a confirmar, no verificada: el SQL Editor de Lovable Cloud acepta un script con varias sentencias y `BEGIN`/`COMMIT`.
+Hipótesis a confirmar, no verificada: el SQL Editor de Lovable Cloud acepta un script con varias sentencias y `BEGIN`/`COMMIT`. (La migración de fundación se ejecutó correctamente con este procedimiento, según informó el responsable.)
+
+Para la migración de campañas (`20261025000200_campaigns.sql`):
+1. Confirmar que la fundación está aplicada: `verification.sql`, consultas 1 a 7 (las tres tablas existen, RLS activo, nombres de restricciones correctos).
+2. Confirmar que **no existen** `campaigns` ni `campaign_metric_entries` (ambas deben devolver 0 filas en la consulta 1 de la sección de campañas de `verification.sql`).
+3. Ejecutar el archivo completo **una vez**.
+4. Ejecutar la sección de campañas de `verification.sql` y registrar el resultado.
 
 1. Confirmar que la base de datos de Lovable Cloud está habilitada y que la versión de PostgreSQL es 13 o superior (`SELECT version();`).
 2. Confirmar que **no existen** las tablas `organizations`, `app_users` ni `organization_memberships` (`verification.sql`, consulta 1, debe devolver 0 filas).
@@ -43,6 +52,10 @@ Si se decide usar **Supabase CLI** con su carpeta de migraciones, hay que tener 
 - No ejecutar `supabase db reset` contra un proyecto con datos reales.
 
 ## 5. Coherencia con Alembic
+
+Mapa de revisiones: `0001_foundation` y `0002_constraint_names_and_rls` equivalen a `migrations/20261025000100_foundation.sql`; `0003_campaigns` equivale a `migrations/20261025000200_campaigns.sql`.
+
+Lección aprendida: la convención de nombres de SQLAlchemy antepone `ck_<tabla>_` a los nombres de `CHECK`. Las migraciones de Alembic deben usar nombres cortos (como los modelos), no nombres completos. Dos revisiones anteriores lo incumplieron y generaron nombres duplicados; `0002` y las pruebas de `test_persistence.py` lo corrigen y lo vigilan.
 
 Hay una sola fuente de verdad conceptual: los modelos de SQLAlchemy y las migraciones de Alembic en `backend/`. El SQL de esta carpeta es una **traducción manual** de ese estado, y se mantiene igual con este procedimiento:
 
@@ -84,6 +97,8 @@ Políticas que habrá que escribir **después** de confirmar la integración de 
 | `organization_memberships` | Lectura de las propias membresías | `user_id` corresponde al usuario autenticado |
 | `app_users` | Lectura del propio registro | `external_subject` corresponde al usuario autenticado |
 | todas | Escritura | Ninguna para roles de API; las escrituras pasan por FastAPI o por la CLI de operador |
+| `campaigns` | Lectura por miembros de la organización | Igual que `organizations`, vía `organization_id` |
+| `campaign_metric_entries` | Lectura por miembros; inserción por analistas y propietarios | Igual, más rol `owner` o `analyst` para insertar (ver sección 11) |
 
 Antes de escribir cualquier política, comprobar en la base real cómo se resuelve la identidad del usuario que hace la petición. No suponer que coincide con `auth.uid()`.
 
@@ -119,3 +134,39 @@ Después, ejecutar `verification.sql` y comprobar el número de filas frente al 
 - **Contraseñas.** No se exportan ni se importan desde este esquema; no existen en él.
 - **Archivos.** Este esquema no tiene almacenamiento de archivos. Si en el futuro se guardan archivos (por ejemplo, exportaciones de campañas), se gestionan con el almacenamiento administrado del entorno de destino, no con tablas de esta carpeta.
 - **Datos de análisis.** Este esquema todavía no contiene campañas, análisis ni auditoría. Cuando existan, sus migraciones irán en esta carpeta, con su propio archivo y su propia sección en `applied-migrations.md`.
+
+## 11. Campañas y métricas (migración 20261025000200)
+
+Tablas:
+
+- `campaigns`: campaña de una organización. Nombre, canal, objetivo, etiqueta de periodo en texto libre (el analizador acepta texto como "1 al 15 de agosto de 2026"), moneda (`COP` por defecto, formato ISO de tres letras), fechas de periodo opcionales, creador y archivado lógico (`archived_at`).
+- `campaign_metric_entries`: registros históricos de métricas. Cada entrada guarda el texto original (`raw_input`, hasta 12.000 caracteres), la fuente (`form` o `text`) y las métricas tal como se introdujeron, más `previous_metrics` (jsonb con objeto, mismo contrato que el analizador).
+
+Invariantes garantizados por PostgreSQL (no solo por la aplicación):
+
+| Regla | Mecanismo |
+|---|---|
+| Una entrada solo puede apuntar a una campaña de su misma organización | Clave foránea compuesta `(organization_id, campaign_id) -> campaigns(organization_id, id)` |
+| El historial no se modifica ni se borra | Disparador `BEFORE UPDATE OR DELETE` que lanza error. Una corrección es una entrada nueva |
+| Las métricas no son negativas | `CHECK` por columna en conjunto |
+| Fuente, longitud de texto y orden de fechas válidos | `CHECK` |
+| Una campaña con historial no se puede borrar | Clave foránea con `ON DELETE RESTRICT`. Para retirar una campaña se usa `archived_at` |
+| Moneda con formato ISO | `CHECK` `^[A-Z]{3}$` |
+
+Tipos de datos:
+
+- Inversión e ingresos: `numeric(14,2)`. CPC y CPL (costos unitarios): `numeric(14,4)`. ROAS: `numeric(12,4)`. CTR: `numeric(9,4)`. Frecuencia: `numeric(12,4)`. Nunca coma flotante para dinero.
+- Conteos (impresiones, alcance, clics, leads, conversiones): `bigint`. **La API debe rechazar conteos fraccionarios antes de insertar**; la base solo garantiza que no sean negativos.
+- Redondeo: al insertar, los valores monetarios se redondean a centavos (medio hacia fuera de cero). Ejemplo verificado: `1234567.005` se guarda como `1234567.01`.
+- No hay cota superior para CTR ni para otras métricas: un CTR de 250 % se acepta y el analizador lo marca como advertencia. La base no decide qué dato es correcto.
+
+Pruebas realizadas (base temporal aislada, SQL manual y Alembic con esquemas idénticos): entrada válida aceptada; campaña de otra organización rechazada; organización inexistente rechazada; `UPDATE` y `DELETE` sobre entradas rechazados; valores negativos, fuente inválida, texto de más de 12.000 caracteres, fechas invertidas, `previous_metrics` que no sea objeto, moneda y nombre en blanco, todos rechazados; campaña con historial no borrable; creador inexistente rechazado; RLS activo, el propietario ve las filas y el rol de API ve cero filas.
+
+Notas operativas:
+- `TRUNCATE` no está bloqueado por el disparador. Es una operación del propietario, no accesible desde APIs, y la usa la limpieza de pruebas. Si se necesita bloquearlo en producción, debe añadirse en una migración nueva y en Alembic a la vez.
+- Los ORM de FastAPI ya describen estas tablas (`backend/app/db/models.py`). Las pruebas `test_campaign_schema.py` verifican estas reglas contra PostgreSQL real.
+- Las políticas RLS de estas tablas quedan pendientes hasta validar la identidad (sección 8).
+
+## 12. Verificación de campañas
+
+La sección de campañas de `verification.sql` comprueba: que las dos tablas existen, que el disparador de historial está instalado, que los nombres de restricciones son los esperados, y que RLS está activo sin políticas. Ejecutarla después de la migración 2 y comparar con lo que describen sus comentarios.
