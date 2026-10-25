@@ -74,3 +74,27 @@ Estado de configuración de Supabase en este entorno: `SUPABASE_URL` vacía. El 
 - Límites de intentos de login y política de sesiones según el plan de Supabase.
 - Revocación inmediata de tokens de acceso (hoy: expiración corta).
 - RLS en PostgreSQL (etapa 2.7).
+
+## Fase 2.2B: integración real de Supabase Auth
+
+**Estado: no verificada contra un proyecto Supabase real.** No hay un proyecto dedicado a RCKT configurado en este entorno, y no se usaron credenciales de otros proyectos (en esta máquina hay una instancia local de Supabase CLI de otro proyecto; no se tocó). Procedimiento para activarla: `docs/PHASE2_AUTH_LIVE.md`.
+
+Lo que sí se verificó sin credenciales reales:
+
+| Verificación | Resultado |
+|---|---|
+| E2E Playwright (identidad simulada, proveedor simulado) | **18 passed** (setup, 9 de autenticación, 8 de campañas) |
+| Caché: respuestas autenticadas con `Cache-Control: no-store` | Verificado en E2E |
+| Cookies de sesión: `HttpOnly`, `Secure`, `SameSite=Lax` | Verificado en E2E |
+| `scripts/supabase-live-check.py` contra el emisor simulado | **13 passed, 0 failed** (valida la herramienta, no el proyecto) |
+| Backend Python 3.11 y 3.12 (Compose) | 93/93 y 93/93 (sin cambios de backend en esta fase) |
+
+Revisión frente a `@supabase/ssr` y TanStack Start:
+- `@supabase/ssr` escribe cookies con `httpOnly: false` y sin `Secure` por defecto. Se corrigió en el servidor: `HttpOnly`, `Secure` (desactivable solo con `SESSION_COOKIE_SECURE=false` en HTTP sin loopback), `SameSite=Lax`.
+- CSRF: el middleware de TanStack rechaza con 403 las peticiones sin `Sec-Fetch-Site`, `Origin` ni `Referer` coincidentes; cubre login, logout y análisis.
+- Renovación: `getClaims()` valida la firma y renueva; las cookies se reescriben en la misma respuesta. `getSession()` solo se usa después de que `getClaims()` valide la sesión, y FastAPI verifica el token de nuevo.
+- Caché: todas las respuestas del servidor llevan `Cache-Control: no-store`.
+
+Limitación abierta: FastAPI verifica tokens sin estado. Tras cerrar sesión en Supabase, el token sigue aceptado en FastAPI hasta su expiración. Decisión pendiente en `docs/PHASE2_AUTH_LIVE.md`, sección 7.
+
+Pendiente para declarar la integración real verificada: credenciales del proyecto dedicado, usuario analista de prueba, ejecución de `scripts/supabase-live-check.py` con resultado real, y decisión sobre la revocación de tokens.

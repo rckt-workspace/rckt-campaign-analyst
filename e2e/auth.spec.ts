@@ -47,6 +47,15 @@ test("inicio y cierre de sesión: tras cerrar sesión la aplicación vuelve a pe
   expect(cookies.filter((cookie) => cookie.name.startsWith("sb-") && cookie.value)).toEqual([]);
 });
 
+test("respuestas de la aplicación no se almacenan en caché compartida", async ({ page, request }) => {
+  await signIn(page, userEmail("analyst"));
+  await expect(page).toHaveURL("/");
+  const response = await page.request.get("/");
+  expect(response.headers()["cache-control"]).toContain("no-store");
+  const anonymous = await request.get("http://127.0.0.1:3100/login");
+  expect(anonymous.headers()["cache-control"]).toContain("no-store");
+});
+
 test("usuario con sesión que visita /login es enviado a la aplicación", async ({ page }) => {
   await signIn(page, userEmail("analyst"));
   await expect(page).toHaveURL("/");

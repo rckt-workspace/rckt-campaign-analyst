@@ -32,6 +32,7 @@ PRIVATE_KEY = ec.generate_private_key(ec.SECP256R1())
 
 state = {"refresh": "ok"}
 sessions: dict[str, dict] = {}  # refresh token -> user key
+revoked_subjects: set[str] = set()  # subjects whose sessions were ended by logout
 
 
 def by_key(key: str) -> dict:
@@ -122,6 +123,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, jwks())
         if path == "/auth/v1/user":
             user = self._bearer_user()
+            if user and user["subject"] in revoked_subjects:
+                user = None
             return self._json(200, user_payload(user)) if user else self._json(401, {"message": "invalid JWT"})
         self._json(404, {"message": "not found"})
 
@@ -131,6 +134,7 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/__reset":
             state["refresh"] = "ok"
             sessions.clear()
+            revoked_subjects.clear()
             return self._json(200, {"status": "reset"})
         if parsed.path == "/__control":
             body = self._body()
@@ -153,6 +157,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, issue(by_key(entry["key"])))
             return self._json(400, {"error": "unsupported_grant_type"})
         if parsed.path == "/auth/v1/logout":
+            user = self._bearer_user()
+            if user:
+                revoked_subjects.add(user["subject"])
             return self._json(204, None)
         self._json(404, {"message": "not found"})
 

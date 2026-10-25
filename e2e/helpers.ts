@@ -97,6 +97,8 @@ export async function expectSessionCookiesAreHttpOnly(page: Page) {
   expect(session.length, "a signed-in session must set cookies").toBeGreaterThan(0);
   for (const cookie of session) {
     expect(cookie.httpOnly, `${cookie.name} must be HttpOnly`).toBeTruthy();
+    expect(cookie.secure, `${cookie.name} must be Secure`).toBeTruthy();
+    expect(cookie.sameSite, `${cookie.name} must be SameSite=Lax`).toBe("Lax");
   }
 }
 

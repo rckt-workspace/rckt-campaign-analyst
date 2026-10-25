@@ -1,8 +1,11 @@
 import { createStart, createCsrfMiddleware, createMiddleware } from "@tanstack/react-start";
+import { setResponseHeader } from "@tanstack/react-start/server";
 
 import { renderErrorPage } from "./lib/error-page";
 
 const errorMiddleware = createMiddleware().server(async ({ next }) => {
+  // Every response depends on who is signed in, so no shared cache may store it.
+  setResponseHeader("Cache-Control", "no-store");
   try {
     return await next();
   } catch (error) {

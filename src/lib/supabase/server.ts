@@ -31,9 +31,16 @@ export function createSupabaseServerClient() {
       },
       setAll(cookiesToSet) {
         for (const { name, value, options } of cookiesToSet) {
-          // @supabase/ssr writes cookies readable by page scripts (it serves the browser client too).
-          // This application has no browser client, so session cookies are forced to HttpOnly.
-          setCookie(name, value, { ...options, httpOnly: true, sameSite: "lax", path: "/" });
+          // @supabase/ssr defaults to cookies readable by page scripts and sets no Secure flag.
+          // This application has no browser client, so session cookies are HttpOnly, SameSite=Lax and Secure.
+          // SESSION_COOKIE_SECURE=false is only for plain-HTTP local runs outside loopback.
+          setCookie(name, value, {
+            ...options,
+            httpOnly: true,
+            sameSite: "lax",
+            path: "/",
+            secure: process.env["SESSION_COOKIE_SECURE"] !== "false",
+          });
         }
       },
     },
