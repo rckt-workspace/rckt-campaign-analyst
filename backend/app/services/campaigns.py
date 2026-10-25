@@ -15,7 +15,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.models import AppUser, Campaign, CampaignMetricEntry
 from app.db.repositories import CampaignMetricRepository, CampaignRepository
 from app.domain.campaigns import validate_period
-from app.domain.schemas import CampaignCreate, CampaignMetricCreate, CampaignUpdate
+from app.domain.schemas import (
+    CampaignCreate,
+    CampaignMetricCreate,
+    CampaignUpdate,
+    CampaignWithMetricsCreate,
+)
 
 
 class CampaignNotFoundError(Exception):
@@ -82,6 +87,21 @@ async def archive_campaign(session: AsyncSession, *, organization_id: uuid.UUID,
     return campaign
 
 
+async def _add_metric_entry(
+    session: AsyncSession,
+    *,
+    organization_id: uuid.UUID,
+    campaign_id: uuid.UUID,
+    user: AppUser,
+    payload: CampaignMetricCreate,
+) -> CampaignMetricEntry:
+    values = payload.model_dump(exclude={"previous"})
+    values["previous_metrics"] = payload.previous.model_dump(mode="json")
+    return await CampaignMetricRepository(session).add(
+        organization_id=organization_id, campaign_id=campaign_id, created_by=user.id, values=values
+    )
+
+
 async def record_metric_entry(
     session: AsyncSession,
     *,
@@ -93,12 +113,25 @@ async def record_metric_entry(
     campaign = await _get_campaign(session, organization_id=organization_id, campaign_id=campaign_id)
     if campaign.archived_at is not None:
         raise CampaignArchivedError
-
-    values = payload.model_dump(exclude={"previous"})
-    values["previous_metrics"] = payload.previous.model_dump(mode="json")
-    return await CampaignMetricRepository(session).add(
-        organization_id=organization_id, campaign_id=campaign_id, created_by=user.id, values=values
+    return await _add_metric_entry(
+        session, organization_id=organization_id, campaign_id=campaign_id, user=user, payload=payload
     )
+
+
+async def create_campaign_with_metrics(
+    session: AsyncSession, *, organization_id: uuid.UUID, user: AppUser, payload: CampaignWithMetricsCreate
+) -> tuple[Campaign, CampaignMetricEntry]:
+    """Atomic: both inserts share the request's transaction. If the second fails, the session rolls back the first.
+
+    The caller commits once, when the request succeeds (see app.db.session.Database.session).
+    """
+    campaign = await CampaignRepository(session).create(
+        organization_id=organization_id, created_by=user.id, values=payload.campaign.model_dump()
+    )
+    entry = await _add_metric_entry(
+        session, organization_id=organization_id, campaign_id=campaign.id, user=user, payload=payload.metrics
+    )
+    return campaign, entry
 
 
 async def list_metric_entries(

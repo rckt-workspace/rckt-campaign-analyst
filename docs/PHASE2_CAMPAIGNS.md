@@ -16,16 +16,22 @@ Prefijo: `/api/v1/organizations/{organization_id}/campaigns`. La organización v
 | POST | `/{campaign_id}/archive` | owner | 200 `CampaignRead` (idempotente) |
 | POST | `/{campaign_id}/metrics` | owner, analyst | 201 `CampaignMetricRead` |
 | GET | `/{campaign_id}/metrics` | owner, analyst, client_viewer | 200 lista, más recientes primero |
+| POST | `/with-metrics` | owner, analyst | 201 `CampaignWithMetricsRead` (campaña y primera entrada, en una transacción) |
 
 No existe ningún endpoint que modifique o elimine una entrada de métricas, ni que elimine una campaña.
 
+`POST …/with-metrics` recibe `{ "campaign": {…}, "metrics": {…} }`. Los endpoints individuales se mantienen sin cambios.
+
 ## 2. Roles
 
-Se siguió la instrucción de la fase, que difiere del diseño original (`PHASE2_DESIGN.md`, sección 4):
-el diseño permitía a `analyst` crear **o editar** campañas; aquí `analyst` solo crea y registra métricas,
-y editar o archivar queda reservado a `owner`. **Pendiente de confirmar** por el responsable de RCKT.
+Decisión definitiva de RCKT (cierre de la fase 2.4). `PHASE2_DESIGN.md`, sección 4, usa la misma matriz:
+
+- **owner:** crear, consultar, editar y archivar campañas; registrar y consultar métricas.
+- **analyst:** crear y consultar campañas; registrar y consultar métricas. No puede editar ni archivar.
+- **client_viewer:** solo consultar campañas y su historial de métricas.
 
 Constantes en `backend/app/domain/access.py`: `VIEW_ROLES`, `RECORD_CAMPAIGN_ROLES`, `CAMPAIGN_ADMIN_ROLES`.
+`tests/test_campaign_roles.py` comprueba cada rol contra cada operación, y el comportamiento sobre campañas archivadas.
 
 ## 3. Reglas
 
@@ -37,9 +43,22 @@ Constantes en `backend/app/domain/access.py`: `VIEW_ROLES`, `RECORD_CAMPAIGN_ROL
   PostgreSQL lo impide aunque se ejecute SQL directo. Las correcciones son entradas nuevas.
 - **Periodo:** `period_end` no puede ser anterior a `period_start`. En PATCH se valida el resultado combinado
   (`422 INVALID_PERIOD`).
-- **Valores:** los importes respetan `numeric(14,2)`, los costos unitarios y ratios `numeric(14,4)` o `(12,4)`, y
-  los conteos son enteros no negativos (`bigint`). Un valor que la base no podría guardar se rechaza con `422`
-  antes del INSERT.
+- **Precisión:** cada valor se guarda exactamente como se envió, o se rechaza con `422`. Nunca se redondea en silencio.
+  Límites según las columnas de PostgreSQL:
+
+  | Campos | Tipo | Dígitos y decimales admitidos |
+  |---|---|---|
+  | `investment`, `revenue` | `numeric(14,2)` | hasta 12 enteros y 2 decimales |
+  | `cpc`, `cpl` | `numeric(14,4)` | hasta 10 enteros y 4 decimales |
+  | `frequency`, `roas` | `numeric(12,4)` | hasta 8 enteros y 4 decimales |
+  | `ctr` | `numeric(9,4)` | hasta 5 enteros y 4 decimales |
+  | `impressions`, `reach`, `clicks`, `leads`, `conversions` | `bigint` | enteros no negativos |
+
+- **Normalización documentada:** el número JSON se convierte a `Decimal` a partir de su representación textual
+  (`0.3` → `0.3`), sin pasar por `float`. Al devolverse, los importes son números JSON. `previous` se guarda en
+  `jsonb` como números JSON, sin restricción de precisión en la base.
+- **Interfaz:** envía los valores tal como el usuario los escribió. Si uno excede la escala de su columna, el guardado
+  no se realiza y el aviso lo indica. No hay redondeo en el navegador.
 
 ## 4. Errores
 
@@ -57,14 +76,12 @@ Archivos:
 - `src/components/campaign/SavedCampaignsPanel.tsx`: lista de campañas de la organización.
 - `src/routes/index.tsx`: conecta guardado, lista y sesión caducada (redirige a `/login`, como el análisis).
 
-El guardado envía dos peticiones: crea la campaña y luego registra su primera entrada de métricas. Los decimales se
-redondean a la escala de la columna. Los conteos fraccionarios no se redondean: llegan como `422` y la interfaz
-muestra un aviso.
+El guardado envía **una sola petición** a `POST …/with-metrics`. La API crea la campaña y su primera entrada en
+una transacción: si cualquiera de las dos inserciones falla, PostgreSQL revierte ambas. Los valores no se redondean
+en el navegador; si alguno no cabe en su columna, la API responde `422 CAMPAIGN_INVALID` y la interfaz lo indica.
 
 ## 6. Riesgos y pendientes
 
-- **Guardado no atómico:** si falla la segunda petición, queda una campaña sin métricas. Solución propuesta: un
-  endpoint compuesto que haga ambas inserciones en una transacción. Pendiente.
 - **Sin historial de métricas en la interfaz:** la API lo expone (`GET .../metrics`), la interfaz solo lista campañas.
 - **Lista sin paginación en la interfaz:** muestra las 50 campañas más recientes.
 - **Edición y archivado sin interfaz:** solo disponibles por API.

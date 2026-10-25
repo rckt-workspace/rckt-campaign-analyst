@@ -59,6 +59,9 @@ type CampaignRecord = {
   created_at: string;
 };
 
+/** FastAPI response of the atomic create endpoint. Only the campaign id is used by the UI. */
+type CampaignWithMetricsRecord = { campaign: CampaignRecord; metric_entry: { id: string } };
+
 /** Campaign as the UI uses it. Contains only what the list shows. */
 export type SavedCampaign = {
   id: string;
@@ -102,11 +105,11 @@ export const analyzeCampaign = createServerFn({ method: "POST" })
     }
   });
 
-/** Keeps the decimals the database stores (numeric(14,2), numeric(14,4), ...). Rounding is representation, not loss. */
-function roundTo(value: number | null, places: number): number | null {
-  return value === null ? null : Number(value.toFixed(places));
-}
-
+/**
+ * Values are sent exactly as the user entered them. They are not rounded here: FastAPI validates the precision of
+ * each column and refuses a value it would have to round (422 CAMPAIGN_INVALID). A silent rounding of financial
+ * data would store a number the user never wrote.
+ */
 function campaignBody(data: CampaignPayload) {
   return {
     name: data.campaign?.trim() || "Campaña sin nombre",
@@ -121,18 +124,18 @@ function metricBody(data: CampaignPayload, source: "form" | "text") {
     source,
     raw_input: data.rawInput,
     period_label: data.period?.trim() || null,
-    investment: roundTo(data.investment, 2),
+    investment: data.investment,
     impressions: data.impressions,
     reach: data.reach,
-    frequency: roundTo(data.frequency, 4),
+    frequency: data.frequency,
     clicks: data.clicks,
-    ctr: roundTo(data.ctr, 4),
-    cpc: roundTo(data.cpc, 4),
+    ctr: data.ctr,
+    cpc: data.cpc,
     leads: data.leads,
-    cpl: roundTo(data.cpl, 4),
+    cpl: data.cpl,
     conversions: data.conversions,
-    revenue: roundTo(data.revenue, 2),
-    roas: roundTo(data.roas, 4),
+    revenue: data.revenue,
+    roas: data.roas,
     previous: data.previous,
   };
 }
@@ -149,8 +152,8 @@ function toSavedCampaign(record: CampaignRecord): SavedCampaign {
 }
 
 /**
- * Creates the campaign, then records its first metric entry. These are two requests, so a failure after the first
- * leaves a campaign without metrics. An atomic endpoint is pending (see docs/PHASE2_CAMPAIGNS.md).
+ * One request. FastAPI creates the campaign and its first metric entry in a single transaction: either both are
+ * stored or neither is.
  */
 export const saveCampaign = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => saveRequestSchema.parse(input))
@@ -163,21 +166,19 @@ export const saveCampaign = createServerFn({ method: "POST" })
 
     try {
       const organizationId = await resolveOrganizationId(token, request.organizationId);
-      const base = `/api/v1/organizations/${organizationId}/campaigns`;
-
-      const campaign = await fastapiRequest<CampaignRecord>(base, {
-        token,
-        method: "POST",
-        body: campaignBody(request.data),
-        timeoutMs: 10_000,
-      });
-      await fastapiRequest(`${base}/${campaign.id}/metrics`, {
-        token,
-        method: "POST",
-        body: metricBody(request.data, request.source),
-        timeoutMs: 10_000,
-      });
-      return { id: campaign.id };
+      const result = await fastapiRequest<CampaignWithMetricsRecord>(
+        `/api/v1/organizations/${organizationId}/campaigns/with-metrics`,
+        {
+          token,
+          method: "POST",
+          body: {
+            campaign: campaignBody(request.data),
+            metrics: metricBody(request.data, request.source),
+          },
+          timeoutMs: 10_000,
+        },
+      );
+      return { id: result.campaign.id };
     } catch (error) {
       console.error("Campaign save failed");
       throw new Error(campaignErrorCode(error, ANALYSIS_ERRORS.CAMPAIGN_SAVE_FAILED));

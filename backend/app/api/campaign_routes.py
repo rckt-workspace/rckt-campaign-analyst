@@ -24,6 +24,8 @@ from app.domain.schemas import (
     CampaignMetricRead,
     CampaignRead,
     CampaignUpdate,
+    CampaignWithMetricsCreate,
+    CampaignWithMetricsRead,
 )
 from app.services import campaigns as campaign_service
 from app.services.access import OrganizationNotFoundError, PermissionDeniedError, require_role
@@ -72,6 +74,25 @@ async def create_campaign(
         session, organization_id=organization_id, user=user, payload=payload
     )
     return CampaignRead.model_validate(campaign)
+
+
+@router.post("/with-metrics", status_code=201, response_model=CampaignWithMetricsRead)
+async def create_campaign_with_metrics(
+    organization_id: uuid.UUID,
+    payload: CampaignWithMetricsCreate,
+    user: AppUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> CampaignWithMetricsRead:
+    """One request, one transaction: the campaign and its first metric entry, or nothing."""
+    await _authorize(session, organization_id=organization_id, user=user, allowed=RECORD_CAMPAIGN_ROLES)
+    with _service_errors():
+        campaign, entry = await campaign_service.create_campaign_with_metrics(
+            session, organization_id=organization_id, user=user, payload=payload
+        )
+    return CampaignWithMetricsRead(
+        campaign=CampaignRead.model_validate(campaign),
+        metric_entry=CampaignMetricRead.model_validate(entry),
+    )
 
 
 @router.get("", response_model=list[CampaignRead])

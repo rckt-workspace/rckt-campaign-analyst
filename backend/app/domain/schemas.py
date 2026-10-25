@@ -216,3 +216,17 @@ class CampaignMetricRead(CampaignMetricValues):
     raw_input: str
     previous_metrics: PreviousMetrics
     created_at: datetime
+
+
+class CampaignWithMetricsCreate(BaseModel):
+    """A campaign and its first metric entry. Both are written in one transaction, or neither is."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    campaign: CampaignCreate
+    metrics: CampaignMetricCreate
+
+
+class CampaignWithMetricsRead(BaseModel):
+    campaign: CampaignRead
+    metric_entry: CampaignMetricRead

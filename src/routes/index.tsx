@@ -40,7 +40,7 @@ const SAVE_NOTICES: Record<string, SaveResult> = {
   },
   [ANALYSIS_ERRORS.CAMPAIGN_INVALID]: {
     tone: "warn",
-    text: "Algún valor no puede guardarse. Revisa que los conteos sean números enteros y que no haya cifras negativas.",
+    text: "Algún valor no puede guardarse tal como está escrito. Los conteos deben ser enteros, los importes admiten hasta 2 decimales y los costos o ratios hasta 4, sin cifras negativas.",
   },
 };
 const SAVE_FALLBACK: SaveResult = {
