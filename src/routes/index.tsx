@@ -1,15 +1,24 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { AppHeader } from "@/components/campaign/AppHeader";
 import { HeroIntro } from "@/components/campaign/HeroIntro";
-import { CampaignInputPanel } from "@/components/campaign/CampaignInputPanel";
+import { CampaignInputPanel, type SaveResult } from "@/components/campaign/CampaignInputPanel";
 import {
   ExecutiveReportPanel,
   type AnalysisStatus,
 } from "@/components/campaign/ExecutiveReportPanel";
+import {
+  SavedCampaignsPanel,
+  type SavedCampaignsStatus,
+} from "@/components/campaign/SavedCampaignsPanel";
 import { getAccount, signOut } from "@/lib/auth.functions";
 import { ANALYSIS_ERRORS } from "@/lib/analysis-errors";
-import { analyzeCampaign } from "@/lib/campaign-api.functions";
+import {
+  analyzeCampaign,
+  listSavedCampaigns,
+  saveCampaign,
+  type SavedCampaign,
+} from "@/lib/campaign-api.functions";
 import type { NormalizedCampaign } from "@/lib/campaign-metrics";
 import { analyzeMetrics } from "@/lib/metrics-engine";
 
@@ -18,6 +27,25 @@ const NOTICES: Partial<Record<string, string>> = {
     "Tu rol permite consultar los informes de tu organización, pero no generar análisis nuevos.",
   [ANALYSIS_ERRORS.NO_ORGANIZATION]:
     "Tu cuenta todavía no tiene acceso a ninguna organización. Solicita la asignación a tu contacto en RCKT.",
+};
+
+const SAVE_NOTICES: Record<string, SaveResult> = {
+  [ANALYSIS_ERRORS.FORBIDDEN]: {
+    tone: "warn",
+    text: "Tu rol permite consultar campañas guardadas, pero no registrar nuevas.",
+  },
+  [ANALYSIS_ERRORS.NO_ORGANIZATION]: {
+    tone: "warn",
+    text: "Tu cuenta todavía no tiene acceso a ninguna organización. Solicita la asignación a tu contacto en RCKT.",
+  },
+  [ANALYSIS_ERRORS.CAMPAIGN_INVALID]: {
+    tone: "warn",
+    text: "Algún valor no puede guardarse. Revisa que los conteos sean números enteros y que no haya cifras negativas.",
+  },
+};
+const SAVE_FALLBACK: SaveResult = {
+  tone: "warn",
+  text: "No pudimos guardar la campaña. Inténtalo de nuevo.",
 };
 
 export const Route = createFileRoute("/")({
@@ -56,8 +84,55 @@ function Index() {
   const [analysis, setAnalysis] = useState<string | null>(null);
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveResult, setSaveResult] = useState<SaveResult | null>(null);
+  const [campaigns, setCampaigns] = useState<SavedCampaign[]>([]);
+  const [campaignsStatus, setCampaignsStatus] = useState<SavedCampaignsStatus>("loading");
   const lastPayload = useRef<NormalizedCampaign | null>(null);
   const inFlight = useRef(false);
+
+  const refreshCampaigns = useCallback(async () => {
+    try {
+      const result = await listSavedCampaigns({ data: {} });
+      setCampaigns(result.campaigns);
+      setCampaignsStatus("ready");
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      if (code === ANALYSIS_ERRORS.SESSION_EXPIRED) {
+        await navigate({ to: "/login", search: { expired: true } });
+        return;
+      }
+      console.error("No se pudieron cargar las campañas guardadas", code);
+      setCampaignsStatus("error");
+    }
+  }, [navigate]);
+
+  useEffect(() => {
+    void refreshCampaigns();
+  }, [refreshCampaigns]);
+
+  const save = useCallback(
+    async (data: NormalizedCampaign, source: "text" | "form") => {
+      setSaving(true);
+      setSaveResult(null);
+      try {
+        await saveCampaign({ data: { data, source } });
+        setSaveResult({ tone: "ok", text: "Campaña guardada en tu organización." });
+        await refreshCampaigns();
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === ANALYSIS_ERRORS.SESSION_EXPIRED) {
+          await navigate({ to: "/login", search: { expired: true } });
+          return;
+        }
+        console.error("Fallo al guardar la campaña", code);
+        setSaveResult(SAVE_NOTICES[code] ?? SAVE_FALLBACK);
+      } finally {
+        setSaving(false);
+      }
+    },
+    [navigate, refreshCampaigns],
+  );
 
   const analyze = useCallback(
     async (data: NormalizedCampaign) => {
@@ -119,6 +194,9 @@ function Index() {
           <CampaignInputPanel
             isAnalyzing={status === "loading"}
             onAnalyze={(data) => void analyze(data)}
+            isSaving={saving}
+            saveResult={saveResult}
+            onSave={(data, source) => void save(data, source)}
           />
           <ExecutiveReportPanel
             status={status}
@@ -126,6 +204,9 @@ function Index() {
             dataWarnings={dataWarnings}
             onRetry={retry}
           />
+        </div>
+        <div className="mx-auto mt-5 max-w-7xl px-5 md:px-8 lg:mt-6">
+          <SavedCampaignsPanel status={campaignsStatus} campaigns={campaigns} />
         </div>
       </main>
     </div>

@@ -7,6 +7,7 @@ import {
   FlaskConical,
   Info,
   Loader2,
+  Save,
   Wand2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -35,12 +36,21 @@ ROAS: 2,47`;
 
 type InputMode = "paste" | "form";
 
+/** Result of the last save attempt, shown next to the buttons. */
+export type SaveResult = { tone: "ok" | "warn"; text: string };
+
 export function CampaignInputPanel({
   isAnalyzing = false,
   onAnalyze,
+  isSaving = false,
+  saveResult = null,
+  onSave,
 }: {
   isAnalyzing?: boolean;
   onAnalyze?: (data: NormalizedCampaign) => void;
+  isSaving?: boolean;
+  saveResult?: SaveResult | null;
+  onSave?: (data: NormalizedCampaign, source: "text" | "form") => void;
 }) {
   const [mode, setMode] = useState<InputMode>("paste");
   const [rawValue, setRawValue] = useState("");
@@ -78,6 +88,15 @@ export function CampaignInputPanel({
     setEmptyNotice(false);
     setPrepared(normalized);
     onAnalyze?.(normalized);
+  };
+
+  const handleSave = () => {
+    if (empty) {
+      setEmptyNotice(true);
+      return;
+    }
+    setEmptyNotice(false);
+    onSave?.(normalized, mode === "paste" ? "text" : "form");
   };
 
   return (
@@ -157,6 +176,19 @@ export function CampaignInputPanel({
             text={`Datos preparados: ${filled} campos reconocidos y normalizados.`}
           />
         ) : null}
+        {saveResult ? (
+          <Notice
+            tone={saveResult.tone}
+            icon={
+              saveResult.tone === "ok" ? (
+                <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <AlertCircle className="h-4 w-4" aria-hidden="true" />
+              )
+            }
+            text={saveResult.text}
+          />
+        ) : null}
       </div>
 
       <div className="mt-5 flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
@@ -169,21 +201,37 @@ export function CampaignInputPanel({
           <FlaskConical className="h-4 w-4 text-primary" aria-hidden="true" />
           Cargar ejemplo
         </Button>
-        <Button
-          type="button"
-          onClick={handleAnalyze}
-          disabled={!canAnalyze || isAnalyzing}
-          className="justify-center gap-2 rounded-xl px-6 transition-colors duration-200"
-        >
-          {isAnalyzing ? (
-            <>
+        <div className="flex flex-col gap-2.5 sm:flex-row">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={handleSave}
+            disabled={!canAnalyze || isSaving || isAnalyzing}
+            className="justify-center gap-2 rounded-xl border-border bg-surface-elevated text-foreground transition-colors duration-200 hover:border-primary/50"
+          >
+            {isSaving ? (
               <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-              Analizando…
-            </>
-          ) : (
-            "Analizar campaña"
-          )}
-        </Button>
+            ) : (
+              <Save className="h-4 w-4 text-primary" aria-hidden="true" />
+            )}
+            {isSaving ? "Guardando…" : "Guardar campaña"}
+          </Button>
+          <Button
+            type="button"
+            onClick={handleAnalyze}
+            disabled={!canAnalyze || isAnalyzing}
+            className="justify-center gap-2 rounded-xl px-6 transition-colors duration-200"
+          >
+            {isAnalyzing ? (
+              <>
+                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                Analizando…
+              </>
+            ) : (
+              "Analizar campaña"
+            )}
+          </Button>
+        </div>
       </div>
     </section>
   );
