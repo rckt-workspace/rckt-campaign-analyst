@@ -1,7 +1,7 @@
 # Fase 2.5A: persistencia de análisis y registro de llamadas (diseño revisado)
 
-Estado: **esquema, protocolo de escritura y pruebas listos para revisión**. No hay endpoints de análisis. La migración
-no se ha ejecutado en Lovable Cloud ni en ningún entorno remoto. Base: `feat/phase-2-5-analysis-history`, sobre
+Estado: **fase 2.5B implementada** (endpoints, historial e interfaz, §11). La migración 0004 está aplicada en la base
+local de desarrollo y en las bases de prueba; **no** se ha ejecutado en Lovable Cloud ni en ningún entorno remoto. Base: `feat/phase-2-5-analysis-history`, sobre
 `feat/phase-2-4-campaign-persistence` (PR #2, Draft).
 
 Migraciones (la 0004 se puede corregir porque no se ha aplicado; 0001, 0002 y 0003 no se tocan):
@@ -134,7 +134,97 @@ La base `rckt_test` se recreó para construir el esquema desde cero. Todas las p
 4. `format_valid = false` se guarda como éxito. Decidir en 2.5B.
 5. El lease debe fijarse con el presupuesto real de cuatro llamadas.
 
-## 10. Fuera de alcance
+## 10. Fuera de alcance de la fase 2.5A
 
 Endpoints de análisis, cabecera `Idempotency-Key` en la API, lectura del historial, lectura de `usage`, cuotas,
 facturación y pantallas. Se detiene aquí para revisar la estructura de datos.
+
+## 11. Implementación 2.5B
+
+### Endpoints (`backend/app/api/analysis_routes.py`)
+
+| Método y ruta | Roles | Respuesta |
+|---|---|---|
+| `POST /api/v1/organizations/{org}/analyses` (cabecera `Idempotency-Key`) | owner, analyst | 201 nuevo; 200 + `Idempotent-Replayed: true` si se repite |
+| `GET /api/v1/organizations/{org}/analyses?limit&offset` | todos | Página, más reciente primero, sin texto del informe |
+| `GET /api/v1/organizations/{org}/analyses/{id}` | todos | Informe, reporte determinista e intentos |
+
+Códigos: `IDEMPOTENCY_KEY_REQUIRED` y `IDEMPOTENCY_KEY_INVALID` (400), `FORBIDDEN` (403), `NOT_FOUND` (404),
+`ANALYSIS_IN_PROGRESS` (409), `IDEMPOTENCY_KEY_REUSED` (422). Un análisis fallido responde 201 o 200 con
+`status: failed` y su código seguro: el fallo es un resultado guardado, no un error HTTP.
+
+La clave admite de 8 a 128 caracteres: letras, cifras, `.`, `_`, `:` y `-`.
+
+### Flujo de una creación
+
+1. Autenticación y membresía en transacciones cortas (`_resolve_user`, `_authorize`). La ruta no depende de
+   `get_db_session`, porque esa dependencia mantendría una transacción abierta durante toda la petición.
+2. `analysis_history.create_analysis`: calcula el reporte determinista y la huella de entrada, y reclama la clave en
+   PostgreSQL (`analysis_ledger.claim_analysis`). Resultados: `claimed` (única vía que llama al proveedor), `existing`,
+   `expired`, `reused`.
+3. `claimed`: `_run_provider_flow` llama a `request_campaign_analysis` con un `AttemptRecorder`. Cada llamada HTTP se
+   reserva antes (`reserve_attempt`, commit) y se completa después (`complete_attempt`, commit). Ninguna transacción
+   queda abierta durante la espera al proveedor.
+4. Cierre: `succeeded` si el texto cumple el formato; si no, `failed` con `AI_INVALID_RESPONSE`. Cualquier fallo del
+   proveedor queda como `failed` con el último código seguro. Si la base rechaza la escritura porque el lease venció,
+   el análisis se cierra como `ANALYSIS_ABANDONED`.
+
+### Cambios en código existente (compatibles)
+
+- `run_chat_completion` acepta un observador opcional. Sin él, la llamada es idéntica a la anterior.
+- `request_campaign_analysis` acepta un registrador opcional por paso (`initial`, `format_retry`).
+- El endpoint anterior `POST /campaigns/analyze` se mantiene sin cambios de contrato y sin persistencia.
+- El frontend usa ahora el endpoint persistente. Su fallback de un intento sin formato sigue siendo el mismo.
+
+### Interfaz
+
+- Panel «Historial de informes» junto al de campañas guardadas, con el mismo diseño. Muestra campaña, fecha y estado
+  con texto seguro. Carga de más resultados (`offset`).
+- Abrir un informe anterior reutiliza el panel de informe ejecutivo. Un análisis sin informe muestra su estado.
+- Clave de idempotencia: una por análisis, generada en el navegador. El reintento de un análisis que terminó en error
+  del navegador o de red **reutiliza la misma clave** (no hay segundo cobro). Un fallo guardado por el servidor exige
+  una clave nueva, porque repetir la clave devolvería el mismo fallo.
+- El tiempo de espera del navegador es de 200 s: cubre cuatro llamadas con el timeout por defecto (45 s).
+
+### Decisiones
+
+- **Formato inválido tras el reintento:** `failed` con `AI_INVALID_RESPONSE`. Antes, el servicio devolvía el primer
+  texto aunque no cumpliera el formato. Solo cambia el flujo nuevo; el endpoint anterior sigue igual.
+- **`AI_INVALID_RESPONSE`** añadido a la lista segura de la migración 0004 (no aplicada en remoto: se corrigió en
+  origen, no en una migración nueva).
+- **Lease = 510 s** (cuatro llamadas a 120 s, el máximo permitido, más margen). Un lease más largo solo retrasa el
+  abandono.
+- **Tokens y costo:** el proveedor no devuelve `usage` en el transporte actual, así que `usage_reported` es siempre
+  falso y las columnas quedan nulas. No se estiman.
+
+### Limitaciones frente a fallos
+
+- **No hay exactamente-una-ejecución.** Si el proveedor cobra y la respuesta se pierde, el intento queda `reserved`
+  y después `unknown` (con `ANALYSIS_ABANDONED` si el lease venció). El cobro puede existir sin tokens registrados.
+- **Lease vencido con llamada en curso:** el propietario ya no puede escribir. Su resultado se descarta y el análisis se
+  abandona. Es la ventana de riesgo residual más importante.
+- **Cierre fallido tras un error de base:** si el análisis no puede cerrarse (la base rechaza la escritura y el lease
+  sigue vigente), queda en `running` y se cierra en la siguiente petición con la misma clave, cuando el lease venza.
+- **Carrera entre páginas del historial:** si llegan análisis nuevos entre dos cargas de «Cargar más», el `offset`
+  puede repetir un elemento. Es aceptable para esta fase; el cursor por fecha queda para más adelante.
+
+### Verificación
+
+| Comprobación | Resultado |
+|---|---|
+| Backend (pytest), suite completa | 257 passed (incluye 21 de API, 35 de esquema y 23 de protocolo) |
+| Pruebas unitarias (`npm run test:unit`) | 25 passed |
+| TypeScript | sin errores |
+| Build Node/Nitro | correcto |
+| Playwright (servicios simulados) | 32 passed (4 nuevas de historial) |
+| Docker Compose | config válida; `backend`, `frontend` y `db` en healthy; migración 0004 aplicada a la base local |
+
+Todas las pruebas usan proveedores simulados (transporte de prueba o respuestas guionadas). No hay llamadas a
+OpenRouter ni cobros.
+
+### Pendiente
+
+- Leer `usage` de OpenRouter (requiere una llamada autorizada, `PHASE2_DESIGN.md` §3.3).
+- Resolver el conflicto GRANT entre `AGENTS.md` y `CLAUDE.md` antes de abrir la API de datos.
+- Cuotas y facturación (fase 2.6).
+- Cursor por fecha para el historial en lugar de `offset`.
