@@ -4,7 +4,7 @@ Estado: **fase 2.5B implementada** (endpoints, historial e interfaz, §11). La m
 local de desarrollo y en las bases de prueba; **no** se ha ejecutado en Lovable Cloud ni en ningún entorno remoto. Base: `feat/phase-2-5-analysis-history`, sobre
 `feat/phase-2-4-campaign-persistence` (PR #2, Draft).
 
-Migraciones (la 0004 se puede corregir porque no se ha aplicado; 0001, 0002 y 0003 no se tocan):
+Migraciones (0001 a 0003 no se tocan. La 0004 está aplicada en la base local y es inmutable: no se edita. Las correcciones van en migraciones nuevas: la 0005 es la compuerta de formato):
 - SQL portable: `supabase/migrations/20261025000300_analyses.sql` (331 líneas, revisado completo)
 - Alembic: `backend/migrations/versions/20261025_0004_analyses.py`. Sus sentencias se **generan** desde el SQL con
   `gen_alembic_0004.py`; no se editan a mano.
@@ -190,8 +190,8 @@ La clave admite de 8 a 128 caracteres: letras, cifras, `.`, `_`, `:` y `-`.
 
 - **Formato inválido tras el reintento:** `failed` con `AI_INVALID_RESPONSE`. Antes, el servicio devolvía el primer
   texto aunque no cumpliera el formato. Solo cambia el flujo nuevo; el endpoint anterior sigue igual.
-- **`AI_INVALID_RESPONSE`** añadido a la lista segura de la migración 0004 (no aplicada en remoto: se corrigió en
-  origen, no en una migración nueva).
+- **`AI_INVALID_RESPONSE`** se añadió a la lista segura de la 0004 **antes de la primera aplicación local**. Ninguna
+  base la ha recibido sin ese código. A partir de ahí, la 0004 es inmutable; cualquier cambio posterior va en una migración nueva.
 - **Lease = 510 s** (cuatro llamadas a 120 s, el máximo permitido, más margen). Un lease más largo solo retrasa el
   abandono.
 - **Tokens y costo:** el proveedor no devuelve `usage` en el transporte actual, así que `usage_reported` es siempre
@@ -401,3 +401,52 @@ La huella de entrada incluye `metric_entry_id` solo cuando está presente. Las h
 
 Un defecto que las pruebas detectaron durante el trabajo: `entry_matches` quedó como corrutina por un error al insertar la
 función. Al ser siempre verdadera, la comprobación no rechazaba nada. Lo corregí y la prueba de entrada modificada lo cubre.
+
+## 16. Semántica del vínculo y política de reintentos (cierre de casos límite, 2026-10-26)
+
+### Qué representa `metric_entry_id`
+
+`metric_entry_id` representa **la fuente de los datos que se analizaron**, no la solicitud completa. Un vínculo
+afirma exactamente lo que el servidor ha comparado, y nada más.
+
+| Campo de la solicitud | Cómo se verifica el vínculo | Dónde está guardado |
+|---|---|---|
+| Texto de la entrada (`rawInput`) | Igualdad con `raw_input` de la entrada | Entrada de métricas |
+| 12 métricas numéricas | Igualdad, con la misma nulabilidad | Entrada de métricas |
+| Periodo anterior (`previous`) | Igualdad del JSON | Entrada de métricas |
+| Nombre de campaña | Igualdad con el nombre guardado. Si está vacío, el mismo valor por defecto que la interfaz | Campaña |
+| Canal, objetivo y periodo textual | Igualdad normalizada (recortado; vacío = nulo) | Campaña |
+| **`additionalContext`** | **No se verifica: se rechaza el vínculo si está presente.** No se guarda en ninguna parte. | — |
+
+Si cualquier campo verificable no coincide, o si hay contexto adicional, la respuesta es **422 `ENTRY_DOES_NOT_MATCH`** y
+no se reclama nada.
+
+Por tanto, un vínculo **no afirma** que la solicitud sea idéntica a la guardada. Afirma que la entrada y la campaña
+guardadas contienen los mismos datos que se analizaron. El registro completo de lo analizado sigue siendo el snapshot
+y el resumen del informe, junto con la huella de entrada.
+
+### Qué pasa con los reintentos
+
+- Una solicitud se construye una vez, al pedir el análisis: datos, clave y vínculo (si lo hay). Se guarda tal cual.
+- **El reintento reenvía esa misma solicitud.** El cuerpo, el vínculo y la clave no cambian, así que la huella coincide.
+- Si la campaña se guarda después del timeout, **no** se añade vínculo al reintento. Un vínculo nuevo cambiaría la huella
+  y el servidor devolvería 422 `IDEMPOTENCY_KEY_REUSED` sin cobrar.
+- Si el servidor guardó un fallo para esa clave, el reintento usa **una clave nueva** y el mismo cuerpo. El fallo guardado
+  se repetiría si se reutilizara la clave.
+- Un análisis nuevo (otro clic) crea una solicitud nueva con clave nueva. Solo entonces se usa el vínculo guardado.
+
+### Pruebas
+
+- Backend: campos de texto modificados (nombre, canal, objetivo, periodo), contexto adicional, campaña renombrada
+  después de guardar, reintento tras el timeout con la misma clave y cuerpo, y reintento que intenta añadir vínculo (422, sin cobro).
+- Unitarias (`src/lib/analysis-request.test.ts`): sin campaña guardada, con la misma entrada, con entrada distinta,
+  el escenario de timeout seguido de guardado y reintento, el vínculo conservado en el reintento, y la clave nueva tras un fallo guardado.
+- E2E: guardar y analizar la misma campaña (sin contexto adicional, para que el vínculo viaje).
+
+Ningún test llama a OpenRouter. Todas las pruebas usan el transporte simulado o los servidores simulados.
+
+### Lo que sigue sin garantizarse
+
+- `additionalContext` no tiene vínculo verificable. Un análisis con contexto adicional se analiza sin vínculo.
+- Una campaña renombrada o editada después de guardarse deja de vincularse. Es el comportamiento correcto: los datos cambiaron.
+- Un análisis que se pidió sin vínculo no se vincula después, aunque la campaña se guarde.
