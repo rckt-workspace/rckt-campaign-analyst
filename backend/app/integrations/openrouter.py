@@ -1,8 +1,10 @@
 """OpenRouter chat-completions transport with one configurable model fallback."""
 
+import asyncio
 import logging
+import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
@@ -33,7 +35,9 @@ async def call_model(
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> str:
     try:
-        async with httpx.AsyncClient(
+        # httpx applies its timeout to each phase (connect, write, pool, read) separately. This deadline bounds
+        # the whole call, so four calls can never exceed four times CHAT_TIMEOUT_MS plus overhead.
+        async with asyncio.timeout(settings.timeout_seconds), httpx.AsyncClient(
             timeout=httpx.Timeout(settings.timeout_seconds),
             transport=transport,
             follow_redirects=False,
@@ -54,6 +58,9 @@ async def call_model(
                     "stream": False,
                 },
             )
+    except TimeoutError as exc:
+        logger.warning("LLM total deadline exceeded on model %s", model)
+        raise RecoverableAIProviderError("AI_TIMEOUT") from exc
     except httpx.TimeoutException as exc:
         logger.warning("LLM timeout on model %s", model)
         raise RecoverableAIProviderError("AI_TIMEOUT") from exc
@@ -88,17 +95,74 @@ async def call_model(
         raise RecoverableAIProviderError("AI_EMPTY") from exc
 
 
+class CallObserver(Protocol):
+    """Receives one event before and one after every HTTP call. Optional: without it, nothing changes."""
+
+    async def started(self, model_role: str, model: str) -> object:
+        """Called before the request is sent. Returns a token passed back to finished()."""
+
+    async def finished(self, token: object, *, error_code: str | None, http_status: int | None) -> None:
+        """Called once with the outcome. error_code is None on success; http_status is None when unknown."""
+
+
+SAFE_PROVIDER_CODES = ("AI_TIMEOUT", "AI_NETWORK", "AI_EMPTY")
+_HTTP_ERROR = re.compile(r"^AI_(\d{3})$")
+
+
+def classify_provider_error(message: str) -> tuple[str, int | None]:
+    """Maps an internal provider error identifier to a stored safe code and the HTTP status, if any.
+
+    Provider bodies never reach this function: the message only carries AI_TIMEOUT, AI_NETWORK, AI_EMPTY or AI_<status>.
+    """
+    if message in SAFE_PROVIDER_CODES:
+        return message, None
+    match = _HTTP_ERROR.match(message)
+    if match:
+        return "AI_HTTP_ERROR", int(match.group(1))
+    return "INTERNAL_ERROR", None
+
+
+async def _observed_call(
+    observer: CallObserver | None,
+    model_role: str,
+    settings: AISettings,
+    model: str,
+    messages: list[dict[str, str]],
+    transport: httpx.AsyncBaseTransport | None,
+) -> str:
+    if observer is None:
+        return await call_model(settings, model, messages, transport=transport)
+    token = await observer.started(model_role, model)
+    try:
+        answer = await call_model(settings, model, messages, transport=transport)
+    except AIProviderError as exc:
+        code, status = classify_provider_error(str(exc))
+        await observer.finished(token, error_code=code, http_status=status)
+        raise
+    except Exception:
+        # Unexpected failure: the call is still recorded, so no reserved row is left behind. The error is re-raised.
+        await observer.finished(token, error_code="INTERNAL_ERROR", http_status=None)
+        raise
+    await observer.finished(token, error_code=None, http_status=None)
+    return answer
+
+
 async def run_chat_completion(
     messages: list[dict[str, str]],
     transport: httpx.AsyncBaseTransport | None = None,
+    observer: CallObserver | None = None,
 ) -> ChatResult:
     settings = get_ai_settings()
     try:
-        answer = await call_model(settings, settings.primary_model, messages, transport=transport)
+        answer = await _observed_call(
+            observer, "primary", settings, settings.primary_model, messages, transport
+        )
         return ChatResult(answer, settings.primary_model, False)
     except RecoverableAIProviderError:
         if not settings.use_fallback or settings.primary_model == settings.fallback_model:
             raise
         logger.warning("LLM primary unavailable; attempting fallback")
-        answer = await call_model(settings, settings.fallback_model, messages, transport=transport)
+        answer = await _observed_call(
+            observer, "fallback", settings, settings.fallback_model, messages, transport
+        )
         return ChatResult(answer, settings.fallback_model, True)

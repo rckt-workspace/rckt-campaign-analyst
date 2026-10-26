@@ -6,7 +6,7 @@ This is RCKT's company-owned campaign intelligence product, evolved from an expl
 
 Important: Also read and respect `AGENTS.md` (Lovable sync). Never rewrite published Git history, rebase/amend pushed commits, or force push. Never merge to `main` or deploy externally without the user's explicit request.
 
-Current working branch: `chore/docker-compose-node-production`. PR #1 is a draft and GitHub Actions has failed; investigate before assuming any implementation is functional.
+Phase 1 was merged into `main` (commit 69b0054). Each later phase is developed on its own feature branch, stacked on the previous one when it depends on it. Phase 2.4 is PR #2 (Draft, base `main`); Phase 2.5 is stacked on it. GitHub Actions has been blocked by a billing issue; verify remote CI status before assuming any remote check passed.
 
 ## Existing source of truth
 
@@ -35,7 +35,7 @@ Current working branch: `chore/docker-compose-node-production`. PR #1 is a draft
 9. **Safe deployment.** Default binds the frontend to localhost. Do not expose an unauthenticated model-backed product to the public. Public launch requires TLS, authentication, per-user quotas/rate limits, provider budgets, monitoring and rollback.
 10. **Communication.** Respond to the user in clear Spanish, with a concise result: what changed, what commands passed/failed, paths modified, risks, commit, and immediate next step.
 
-## Phase 1 — Acceptance criteria (do these first)
+## Phase 1 — Acceptance criteria (completed, historical reference)
 
 - Backend dependencies install without errors in Python 3.12.
 - `cd backend && python -m pytest -q tests` passes with mock OpenRouter.
@@ -48,3 +48,16 @@ Current working branch: `chore/docker-compose-node-production`. PR #1 is a draft
 - Commit fixes on the feature branch, keeping PR #1 in draft until all applicable gates pass.
 
 Read `docs/PRODUCT_ROADMAP.md` for future work, but implement only the current phase.
+
+## Closed data access (architecture decision, Phase 2.5A and 2.5B)
+
+- Analysis data is never queried directly from the browser. The browser calls server functions, which call FastAPI with the session token. FastAPI checks membership and role for the organization in the path.
+- No broad grants or permissive policies for `anon` or `authenticated`. Review access policy before any migration runs in Lovable Cloud.
+- The production application role must not be a superuser, and must not have BYPASSRLS unless that is an explicit decision.
+
+- Tables that only FastAPI reads and writes (`analyses`, `analysis_usage`, and the campaign tables) keep row level
+  security enabled with **no policies** and **no grants** to `anon` or `authenticated`. Only the owner role used by
+  FastAPI reaches them. Why: the Data API must not expose analysis data until identity integration is verified.
+- Do not add permissive policies, general grants or public views without an explicit decision recorded in `docs/`.
+- `AGENTS.md` carries the same decision (its GRANT rule was narrowed on 2026-10-26). Both files now agree.
+- A migration applied anywhere, including the local development database, is never edited. Corrections go in a new migration.

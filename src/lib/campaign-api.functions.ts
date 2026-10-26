@@ -32,6 +32,14 @@ type CampaignPayload = z.infer<typeof payloadSchema>;
 const requestSchema = z.object({
   data: payloadSchema,
   /**
+   * Sent as the Idempotency-Key header. The same key on a retry returns the stored result and never starts a second
+   * paid call. The browser creates it per analysis and reuses it when retrying that analysis.
+   */
+  idempotencyKey: z.string().min(8).max(128),
+  /** Saved campaign and its entry, only when the analyzed input is exactly the saved one. The server verifies it. */
+  campaignId: z.string().uuid().optional(),
+  metricEntryId: z.string().uuid().optional(),
+  /**
    * Optional organization chosen in the UI. It is a selection only: FastAPI validates it against the
    * user's stored memberships. When omitted, the first authorized organization is used.
    */
@@ -59,6 +67,9 @@ type CampaignRecord = {
   created_at: string;
 };
 
+/** FastAPI analysis record: only the fields the report needs. */
+type AnalysisRecord = { id: string; status: string; analysis_markdown: string | null };
+
 /** FastAPI response of the atomic create endpoint. Only the campaign id is used by the UI. */
 type CampaignWithMetricsRecord = { campaign: CampaignRecord; metric_entry: { id: string } };
 
@@ -85,14 +96,26 @@ export const analyzeCampaign = createServerFn({ method: "POST" })
     try {
       const organizationId = await resolveOrganizationId(token, request.organizationId);
 
-      const response = await fastapiRequest<{ analysis: string }>(
-        `/api/v1/organizations/${organizationId}/campaigns/analyze`,
-        { token, method: "POST", body: request.data, timeoutMs: 110_000 },
+      // Persisted analysis: the answer is stored whatever its outcome, and a repeated key returns that stored result.
+      const record = await fastapiRequest<AnalysisRecord>(
+        `/api/v1/organizations/${organizationId}/analyses`,
+        {
+          token,
+          method: "POST",
+          body: {
+            data: request.data,
+            ...(request.campaignId ? { campaign_id: request.campaignId } : {}),
+            ...(request.metricEntryId ? { metric_entry_id: request.metricEntryId } : {}),
+          },
+          headers: { "Idempotency-Key": request.idempotencyKey },
+          timeoutMs: 200_000,
+        },
       );
-      if (typeof response.analysis !== "string" || !response.analysis.trim()) {
+      if (record.status === "failed") throw new Error(ANALYSIS_ERRORS.ANALYSIS_FAILED);
+      if (record.status !== "succeeded" || !record.analysis_markdown?.trim()) {
         throw new Error(ANALYSIS_ERRORS.UNAVAILABLE);
       }
-      return { analysis: response.analysis };
+      return { analysis: record.analysis_markdown, analysisId: record.id };
     } catch (error) {
       if (error instanceof Error && (Object.values(ANALYSIS_ERRORS) as string[]).includes(error.message)) throw error;
       if (error instanceof FastapiError) {
@@ -178,7 +201,7 @@ export const saveCampaign = createServerFn({ method: "POST" })
           timeoutMs: 10_000,
         },
       );
-      return { id: result.campaign.id };
+      return { id: result.campaign.id, metricEntryId: result.metric_entry.id };
     } catch (error) {
       console.error("Campaign save failed");
       throw new Error(campaignErrorCode(error, ANALYSIS_ERRORS.CAMPAIGN_SAVE_FAILED));

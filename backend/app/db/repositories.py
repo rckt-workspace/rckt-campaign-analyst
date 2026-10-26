@@ -5,8 +5,17 @@ from collections.abc import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 
-from app.db.models import AppUser, Campaign, CampaignMetricEntry, Organization, OrganizationMembership
+from app.db.models import (
+    AppUser,
+    Analysis,
+    AnalysisUsage,
+    Campaign,
+    CampaignMetricEntry,
+    Organization,
+    OrganizationMembership,
+)
 from app.domain.access import Role
 
 
@@ -142,6 +151,17 @@ class CampaignMetricRepository:
         await self._session.refresh(entry)
         return entry
 
+    async def get(
+        self, *, organization_id: uuid.UUID, campaign_id: uuid.UUID, entry_id: uuid.UUID
+    ) -> CampaignMetricEntry | None:
+        return await self._session.scalar(
+            select(CampaignMetricEntry).where(
+                CampaignMetricEntry.organization_id == organization_id,
+                CampaignMetricEntry.campaign_id == campaign_id,
+                CampaignMetricEntry.id == entry_id,
+            )
+        )
+
     async def list_for_campaign(
         self, *, organization_id: uuid.UUID, campaign_id: uuid.UUID, limit: int, offset: int
     ) -> Sequence[CampaignMetricEntry]:
@@ -154,5 +174,39 @@ class CampaignMetricRepository:
             .order_by(CampaignMetricEntry.created_at.desc(), CampaignMetricEntry.id.desc())
             .limit(limit)
             .offset(offset)
+        )
+        return (await self._session.scalars(statement)).all()
+
+
+class AnalysisRepository:
+    """Read access to saved analyses. Writes go through app.db.analysis_ledger, never through this class."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, *, organization_id: uuid.UUID, analysis_id: uuid.UUID) -> Analysis | None:
+        return await self._session.scalar(
+            select(Analysis).where(Analysis.organization_id == organization_id, Analysis.id == analysis_id)
+        )
+
+    async def list_for_organization(
+        self, *, organization_id: uuid.UUID, limit: int, offset: int
+    ) -> Sequence[Analysis]:
+        """Newest first. The report text is deferred: the list never loads it."""
+        statement = (
+            select(Analysis)
+            .options(defer(Analysis.analysis_markdown))
+            .where(Analysis.organization_id == organization_id)
+            .order_by(Analysis.created_at.desc(), Analysis.id.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return (await self._session.scalars(statement)).all()
+
+    async def attempts_for(self, *, organization_id: uuid.UUID, analysis_id: uuid.UUID) -> Sequence[AnalysisUsage]:
+        statement = (
+            select(AnalysisUsage)
+            .where(AnalysisUsage.organization_id == organization_id, AnalysisUsage.analysis_id == analysis_id)
+            .order_by(AnalysisUsage.attempt_number)
         )
         return (await self._session.scalars(statement)).all()

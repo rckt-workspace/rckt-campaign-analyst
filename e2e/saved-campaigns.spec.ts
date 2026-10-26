@@ -34,7 +34,7 @@ test("analista: guarda la campaña de ejemplo y aparece en la lista de su organi
   expect((await save).status()).toBe(200);
 
   await expect(page.getByText(SAVED_MESSAGE)).toBeVisible();
-  await expect(savedList(page).locator("li", { hasText: EXAMPLE_NAME })).toBeVisible();
+  await expect(savedList(page).locator("li", { hasText: EXAMPLE_NAME }).first()).toBeVisible();
 
   const html = await page.content();
   expectNoSecrets(html);
@@ -51,7 +51,7 @@ test("analista: el texto libre guardado se distingue por nombre en la misma list
 
   await expect(page.getByText(SAVED_MESSAGE)).toBeVisible();
   await expect(savedList(page).locator("li", { hasText: "Retargeting Otoño" })).toBeVisible();
-  await expect(savedList(page).locator("li", { hasText: EXAMPLE_NAME })).toBeVisible();
+  await expect(savedList(page).locator("li", { hasText: EXAMPLE_NAME }).first()).toBeVisible();
 });
 
 test("sin datos, guardar está deshabilitado y no llama al servidor", async ({ page }) => {
@@ -72,7 +72,7 @@ test.describe("visor de cliente", () => {
   test("client_viewer ve las campañas guardadas pero no puede registrar nuevas", async ({ page }) => {
     await signIn(page, userEmail("viewer"));
     await page.waitForURL((url) => url.pathname === "/");
-    await expect(savedList(page).locator("li", { hasText: EXAMPLE_NAME })).toBeVisible();
+    await expect(savedList(page).locator("li", { hasText: EXAMPLE_NAME }).first()).toBeVisible();
 
     await page.getByRole("button", { name: "Cargar ejemplo" }).click();
     await page.getByRole("button", { name: SAVE }).click();

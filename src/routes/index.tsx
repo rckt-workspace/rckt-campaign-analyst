@@ -11,6 +11,24 @@ import {
   SavedCampaignsPanel,
   type SavedCampaignsStatus,
 } from "@/components/campaign/SavedCampaignsPanel";
+import {
+  AnalysisHistoryPanel,
+  type AnalysisHistoryStatus,
+} from "@/components/campaign/AnalysisHistoryPanel";
+import { describeAnalysis } from "@/lib/analysis-labels";
+import {
+  inputKey,
+  newRequest,
+  withFreshKey,
+  type AnalysisRequest,
+  type SavedLink,
+} from "@/lib/analysis-request";
+import {
+  getAnalysis,
+  listAnalyses,
+  type AnalysisDetail,
+  type AnalysisSummary,
+} from "@/lib/analysis-history.functions";
 import { getAccount, signOut } from "@/lib/auth.functions";
 import { ANALYSIS_ERRORS } from "@/lib/analysis-errors";
 import {
@@ -47,6 +65,14 @@ const SAVE_FALLBACK: SaveResult = {
   tone: "warn",
   text: "No pudimos guardar la campaña. Inténtalo de nuevo.",
 };
+
+const HISTORY_PAGE_SIZE = 20;
+
+/** One key per analysis. A retry of the same analysis reuses it, so a lost response never starts a second paid call. */
+function newIdempotencyKey(): string {
+  const generated = globalThis.crypto?.randomUUID?.();
+  return generated ?? `key-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
 
 export const Route = createFileRoute("/")({
   beforeLoad: async () => {
@@ -88,8 +114,17 @@ function Index() {
   const [saveResult, setSaveResult] = useState<SaveResult | null>(null);
   const [campaigns, setCampaigns] = useState<SavedCampaign[]>([]);
   const [campaignsStatus, setCampaignsStatus] = useState<SavedCampaignsStatus>("loading");
-  const lastPayload = useRef<NormalizedCampaign | null>(null);
+  const lastRequest = useRef<AnalysisRequest | null>(null);
+  // The last saved campaign and its entry, with the exact input they hold. Used only for identical input.
+  const savedLink = useRef<SavedLink | null>(null);
   const inFlight = useRef(false);
+  const [history, setHistory] = useState<AnalysisSummary[]>([]);
+  const [historyStatus, setHistoryStatus] = useState<AnalysisHistoryStatus>("loading");
+  const [historyHasMore, setHistoryHasMore] = useState(false);
+  const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<AnalysisDetail | null>(null);
+  const [detailStatus, setDetailStatus] = useState<"loading" | "ready" | "error">("loading");
 
   const refreshCampaigns = useCallback(async () => {
     try {
@@ -117,7 +152,12 @@ function Index() {
       setSaving(true);
       setSaveResult(null);
       try {
-        await saveCampaign({ data: { data, source } });
+        const saved = await saveCampaign({ data: { data, source } });
+        savedLink.current = {
+          key: inputKey(data),
+          campaignId: saved.id,
+          metricEntryId: saved.metricEntryId,
+        };
         setSaveResult({ tone: "ok", text: "Campaña guardada en tu organización." });
         await refreshCampaigns();
       } catch (error) {
@@ -135,12 +175,71 @@ function Index() {
     [navigate, refreshCampaigns],
   );
 
+  const refreshHistory = useCallback(async () => {
+    try {
+      const page = await listAnalyses({ data: { limit: HISTORY_PAGE_SIZE, offset: 0 } });
+      setHistory(page.items);
+      setHistoryHasMore(page.hasMore);
+      setHistoryStatus("ready");
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "";
+      if (code === ANALYSIS_ERRORS.SESSION_EXPIRED) {
+        await navigate({ to: "/login", search: { expired: true } });
+        return;
+      }
+      console.error("No se pudo cargar el historial de informes", code);
+      setHistoryStatus("error");
+    }
+  }, [navigate]);
+
+  useEffect(() => {
+    void refreshHistory();
+  }, [refreshHistory]);
+
+  const loadMoreHistory = useCallback(async () => {
+    setHistoryLoadingMore(true);
+    try {
+      const page = await listAnalyses({
+        data: { limit: HISTORY_PAGE_SIZE, offset: history.length },
+      });
+      setHistory((previous) => [...previous, ...page.items]);
+      setHistoryHasMore(page.hasMore);
+    } catch (error) {
+      console.error("No se pudo cargar más historial", error instanceof Error ? error.message : "");
+    } finally {
+      setHistoryLoadingMore(false);
+    }
+  }, [history.length]);
+
+  const openAnalysis = useCallback(
+    async (id: string) => {
+      setSelectedId(id);
+      setDetail(null);
+      setDetailStatus("loading");
+      try {
+        setDetail(await getAnalysis({ data: { analysisId: id } }));
+        setDetailStatus("ready");
+      } catch (error) {
+        const code = error instanceof Error ? error.message : "";
+        if (code === ANALYSIS_ERRORS.SESSION_EXPIRED) {
+          await navigate({ to: "/login", search: { expired: true } });
+          return;
+        }
+        console.error("No se pudo abrir el informe", code);
+        setDetailStatus("error");
+      }
+    },
+    [navigate],
+  );
+
   const analyze = useCallback(
-    async (data: NormalizedCampaign) => {
+    async (request: AnalysisRequest) => {
+      const { data } = request;
       // Defense in depth: the input panel already blocks ambiguous numbers.
       if (data.issues.length > 0 || inFlight.current) return;
       inFlight.current = true;
-      lastPayload.current = data;
+      // The exact request is kept: a retry repeats its body, link and key.
+      lastRequest.current = request;
       setStatus("loading");
       setAnalysis(null);
       setNotice(null);
@@ -150,9 +249,10 @@ function Index() {
           .map((warning) => warning.message),
       );
       try {
-        const result = await analyzeCampaign({ data: { data } });
+        const result = await analyzeCampaign({ data: request });
         setAnalysis(result.analysis);
         setStatus("success");
+        void refreshHistory();
       } catch (error) {
         const code = error instanceof Error ? error.message : "";
         if (code === ANALYSIS_ERRORS.SESSION_EXPIRED) {
@@ -160,6 +260,12 @@ function Index() {
           await navigate({ to: "/login", search: { expired: true } });
           return;
         }
+        // A stored failure is final for its key: the next attempt must use a new key. Any other error may hide a
+        // call that is still running, so the same key is kept and a retry cannot start a second paid call.
+        if (code === ANALYSIS_ERRORS.ANALYSIS_FAILED) {
+          lastRequest.current = withFreshKey(request, newIdempotencyKey);
+        }
+        void refreshHistory();
         console.error("Fallo el análisis de campaña", code);
         setNotice(NOTICES[code] ?? null);
         setStatus("error");
@@ -167,11 +273,11 @@ function Index() {
         inFlight.current = false;
       }
     },
-    [navigate],
+    [navigate, refreshHistory],
   );
 
   const retry = useCallback(() => {
-    if (lastPayload.current) void analyze(lastPayload.current);
+    if (lastRequest.current) void analyze(lastRequest.current);
   }, [analyze]);
 
   const handleSignOut = useCallback(async () => {
@@ -195,7 +301,9 @@ function Index() {
         <div className="mx-auto grid max-w-7xl gap-5 px-5 md:px-8 lg:grid-cols-2 lg:gap-6">
           <CampaignInputPanel
             isAnalyzing={status === "loading"}
-            onAnalyze={(data) => void analyze(data)}
+            onAnalyze={(data) =>
+              void analyze(newRequest(data, savedLink.current, newIdempotencyKey))
+            }
             isSaving={saving}
             saveResult={saveResult}
             onSave={(data, source) => void save(data, source)}
@@ -209,6 +317,41 @@ function Index() {
         </div>
         <div className="mx-auto mt-5 max-w-7xl px-5 md:px-8 lg:mt-6">
           <SavedCampaignsPanel status={campaignsStatus} campaigns={campaigns} />
+        </div>
+        <div className="mx-auto mt-5 grid max-w-7xl gap-5 px-5 md:px-8 lg:mt-6 lg:grid-cols-2 lg:gap-6">
+          <AnalysisHistoryPanel
+            status={historyStatus}
+            items={history}
+            hasMore={historyHasMore}
+            loadingMore={historyLoadingMore}
+            selectedId={selectedId}
+            onOpen={(id) => void openAnalysis(id)}
+            onLoadMore={() => void loadMoreHistory()}
+            onRetry={() => void refreshHistory()}
+          />
+          {selectedId ? (
+            <div className="min-w-0">
+              {detailStatus === "loading" ? (
+                <p className="px-1 text-sm text-muted-foreground">Cargando informe…</p>
+              ) : null}
+              {detailStatus === "error" ? (
+                <p className="px-1 text-sm text-destructive">No pudimos abrir este informe.</p>
+              ) : null}
+              {detailStatus === "ready" && detail?.analysisMarkdown ? (
+                <ExecutiveReportPanel
+                  status="success"
+                  analysis={detail.analysisMarkdown}
+                  dataWarnings={[]}
+                />
+              ) : null}
+              {detailStatus === "ready" && !detail?.analysisMarkdown ? (
+                <p className="px-1 text-sm text-muted-foreground">
+                  Este intento no generó un informe. Estado:{" "}
+                  {detail ? describeAnalysis(detail) : "no disponible"}.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </main>
     </div>

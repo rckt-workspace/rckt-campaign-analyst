@@ -27,13 +27,20 @@ export function fastapiBaseUrl(): string {
 
 export async function fastapiRequest<T>(
   path: string,
-  options: { token: string; method?: "GET" | "POST"; body?: unknown; timeoutMs: number },
+  options: {
+    token: string;
+    method?: "GET" | "POST";
+    body?: unknown;
+    timeoutMs: number;
+    /** Extra headers, such as Idempotency-Key. Never used for credentials: the token travels in Authorization. */
+    headers?: Record<string, string>;
+  },
 ): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs);
   const init: RequestInit = {
     method: options.method ?? "GET",
-    headers: { Authorization: `Bearer ${options.token}` },
+    headers: { ...options.headers, Authorization: `Bearer ${options.token}` },
     signal: controller.signal,
   };
   if (options.body !== undefined) {

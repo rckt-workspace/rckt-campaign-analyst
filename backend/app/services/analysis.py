@@ -1,10 +1,11 @@
 """Business use case: campaign metrics -> single-agent executive analysis."""
 
 from pathlib import Path
+from typing import Protocol
 
 from app.domain.metrics import analyze_metrics, build_deterministic_block
 from app.domain.schemas import CampaignInput
-from app.integrations.openrouter import run_chat_completion
+from app.integrations.openrouter import CallObserver, run_chat_completion
 
 SYSTEM_PROMPT = (
     Path(__file__).resolve().parents[1] / "prompts" / "campaign-analyst.txt"
@@ -67,12 +68,23 @@ def is_parseable(response: str) -> bool:
     return REQUIRED_HEADING in response and "## Resumen ejecutivo" in response
 
 
-async def request_campaign_analysis(data: CampaignInput) -> str:
+class StepRecorder(Protocol):
+    """Hands out one call observer per request step ("initial" or "format_retry"). Used by the persisted flow."""
+
+    def for_step(self, step: str) -> CallObserver: ...
+
+
+def _step_kwargs(recorder: StepRecorder | None, step: str) -> dict:
+    # Without a recorder the call is exactly the historical one (no observer argument at all).
+    return {} if recorder is None else {"observer": recorder.for_step(step)}
+
+
+async def request_campaign_analysis(data: CampaignInput, recorder: StepRecorder | None = None) -> str:
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": build_user_message(data)},
     ]
-    first = await run_chat_completion(messages)
+    first = await run_chat_completion(messages, **_step_kwargs(recorder, "initial"))
     first_text = sanitize(first.text)
     if is_parseable(first_text):
         return first_text
@@ -89,7 +101,8 @@ async def request_campaign_analysis(data: CampaignInput) -> str:
         ),
     }
     retry = await run_chat_completion(
-        [*messages, {"role": "assistant", "content": first.text}, correction]
+        [*messages, {"role": "assistant", "content": first.text}, correction],
+        **_step_kwargs(recorder, "format_retry"),
     )
     result = sanitize(retry.text)
     return result if is_parseable(result) else first_text

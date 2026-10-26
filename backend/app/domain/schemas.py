@@ -230,3 +230,71 @@ class CampaignWithMetricsCreate(BaseModel):
 class CampaignWithMetricsRead(BaseModel):
     campaign: CampaignRead
     metric_entry: CampaignMetricRead
+
+
+# --- Analyses (Phase 2.5B) -------------------------------------------------------------------------------------
+
+class AnalysisCreate(BaseModel):
+    """Same campaign payload the analysis endpoint already accepts, plus an optional saved campaign.
+
+    The organization comes from the path only. The Idempotency-Key header identifies the request.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_id: uuid.UUID | None = None
+    metric_entry_id: uuid.UUID | None = None
+    data: CampaignInput
+
+    @model_validator(mode="after")
+    def entry_needs_campaign(self) -> "AnalysisCreate":
+        if self.metric_entry_id is not None and self.campaign_id is None:
+            raise ValueError("metric_entry_id requires campaign_id")
+        return self
+
+
+class AnalysisAttemptRead(BaseModel):
+    """One HTTP call to the provider, in order. Tokens and cost are null unless the provider reported them."""
+
+    attempt_number: int
+    step: str
+    model_role: str
+    model: str
+    status: str
+    error_code: str | None
+    http_status: int | None
+    usage_reported: bool
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    cost_micros: int | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class AnalysisSummaryRead(BaseModel):
+    """List item. Never contains the report text."""
+
+    id: uuid.UUID
+    status: str
+    error_code: str | None
+    campaign_id: uuid.UUID | None
+    campaign_name: str | None
+    created_at: datetime
+    completed_at: datetime | None
+    model_used: str | None
+    used_fallback: bool
+    format_valid: bool | None
+    latency_ms: int | None
+
+
+class AnalysisDetailRead(AnalysisSummaryRead):
+    analysis_markdown: str | None
+    deterministic_report: dict
+    attempts: list[AnalysisAttemptRead]
+
+
+class AnalysisPageRead(BaseModel):
+    items: list[AnalysisSummaryRead]
+    limit: int
+    offset: int
+    has_more: bool
