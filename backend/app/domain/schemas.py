@@ -243,7 +243,14 @@ class AnalysisCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     campaign_id: uuid.UUID | None = None
+    metric_entry_id: uuid.UUID | None = None
     data: CampaignInput
+
+    @model_validator(mode="after")
+    def entry_needs_campaign(self) -> "AnalysisCreate":
+        if self.metric_entry_id is not None and self.campaign_id is None:
+            raise ValueError("metric_entry_id requires campaign_id")
+        return self
 
 
 class AnalysisAttemptRead(BaseModel):

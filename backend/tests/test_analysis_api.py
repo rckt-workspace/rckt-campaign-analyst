@@ -22,7 +22,7 @@ from app.services.analysis import is_parseable
 from tests.api_fixtures import api_client, token_verifier  # noqa: F401  (pytest fixtures)
 from tests.auth_helpers import make_token
 from tests.conftest import run
-from tests.test_campaign_api import add_member, seed
+from tests.test_campaign_api import CAMPAIGN_BODY, METRIC_BODY, add_member, bearer, campaigns_url, seed
 
 VALID = "## Estado general\n🟡 Requiere atención\n## Resumen ejecutivo\nResumen de prueba."
 INVALID = "Texto sin el formato obligatorio."
@@ -404,3 +404,146 @@ def test_an_unexpected_failure_never_leaves_the_analysis_running(api_client, dat
     listed = api_client.get(url(organization_id), headers={"Authorization": f"Bearer {make_token('owner-a')}"}).json()
     [item] = listed["items"]
     assert (item["status"], item["error_code"]) == ("failed", "INTERNAL_ERROR")
+
+
+# --- metrics snapshot and the explicit link to a saved entry ---------------------------------------------------------
+
+LINK_DATA = {
+    "rawInput": METRIC_BODY["raw_input"],
+    "campaign": CAMPAIGN_BODY["name"],
+    "channel": "Meta",
+    "objective": "Leads",
+    "period": "Octubre 2026",
+    "investment": 1000.5,
+    "impressions": 20000,
+    "reach": 9000,
+    "frequency": 2.2222,
+    "clicks": 300,
+    "ctr": 1.5,
+    "cpc": 3.3375,
+    "leads": 12,
+    "cpl": 83.375,
+    "conversions": 4,
+    "revenue": 4000,
+    "roas": 4,
+    "previous": {"investment": 900, "clicks": 250},
+}
+
+
+def saved_entry(api_client, organization_id, subject: str) -> dict:  # type: ignore[no-untyped-def]
+    """Creates a campaign and its first entry through the atomic endpoint, as the interface does on save."""
+    response = api_client.post(
+        f"{campaigns_url(organization_id)}/with-metrics",
+        json={"campaign": CAMPAIGN_BODY, "metrics": METRIC_BODY},
+        headers=bearer(subject),
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def linked_body(saved: dict, data: dict = LINK_DATA) -> dict:  # type: ignore[no-untyped-def]
+    return {"campaign_id": saved["campaign"]["id"], "metric_entry_id": saved["metric_entry"]["id"], "data": data}
+
+
+def test_a_linked_analysis_is_verified_and_stored_with_its_campaign(api_client, database, provider):  # type: ignore[no-untyped-def]
+    organization_id = owner(database)
+    saved = saved_entry(api_client, organization_id, "owner-a")
+    provider.replies = [ok(VALID)]
+
+    response = post(api_client, organization_id, "owner-a", "key-link-001", linked_body(saved))
+
+    assert response.status_code == 201, response.text
+    assert response.json()["campaign_id"] == saved["campaign"]["id"]
+    assert provider.calls == 1
+
+
+def test_a_changed_input_is_refused_before_anything_is_claimed(api_client, database, provider):  # type: ignore[no-untyped-def]
+    organization_id = owner(database)
+    saved = saved_entry(api_client, organization_id, "owner-a")
+    changed = {**LINK_DATA, "investment": 999.0}
+
+    response = post(api_client, organization_id, "owner-a", "key-changed-001", linked_body(saved, changed))
+
+    assert response.status_code == 422 and response.json() == {"detail": "ENTRY_DOES_NOT_MATCH"}
+    assert provider.calls == 0
+    assert api_client.get(url(organization_id), headers={"Authorization": f"Bearer {make_token('owner-a')}"}).json()["items"] == []
+
+
+def test_an_entry_of_another_organization_is_not_found(api_client, database, provider):  # type: ignore[no-untyped-def]
+    org_a = owner(database, slug="cliente-a", subject="owner-a")
+    org_b = owner(database, slug="cliente-b", subject="owner-b")
+    foreign = saved_entry(api_client, org_b, "owner-b")
+
+    response = post(api_client, org_a, "owner-a", "key-foreign-entry", linked_body(foreign))
+
+    assert response.status_code == 404 and provider.calls == 0
+
+
+def test_an_entry_of_another_campaign_is_not_found(api_client, database, provider):  # type: ignore[no-untyped-def]
+    organization_id = owner(database)
+    first = saved_entry(api_client, organization_id, "owner-a")
+    second = saved_entry(api_client, organization_id, "owner-a")
+    mismatched = {"campaign_id": second["campaign"]["id"], "metric_entry_id": first["metric_entry"]["id"], "data": LINK_DATA}
+
+    response = post(api_client, organization_id, "owner-a", "key-other-campaign", mismatched)
+
+    assert response.status_code == 404 and provider.calls == 0
+
+
+def test_an_entry_without_its_campaign_is_a_validation_error(api_client, database, provider):  # type: ignore[no-untyped-def]
+    organization_id = owner(database)
+    saved = saved_entry(api_client, organization_id, "owner-a")
+
+    response = post(api_client, organization_id, "owner-a", "key-entry-only",
+                    {"metric_entry_id": saved["metric_entry"]["id"], "data": LINK_DATA})
+
+    assert response.status_code == 422 and provider.calls == 0
+
+
+def test_a_linked_replay_returns_the_stored_analysis(api_client, database, provider):  # type: ignore[no-untyped-def]
+    organization_id = owner(database)
+    saved = saved_entry(api_client, organization_id, "owner-a")
+    provider.replies = [ok(VALID)]
+    first = post(api_client, organization_id, "owner-a", "key-link-replay", linked_body(saved))
+    second = post(api_client, organization_id, "owner-a", "key-link-replay", linked_body(saved))
+
+    assert second.status_code == 200 and second.json()["id"] == first.json()["id"]
+    assert provider.calls == 1
+
+
+def test_the_snapshot_keeps_the_metrics_and_never_the_text(api_client, database, provider):  # type: ignore[no-untyped-def]
+    organization_id = owner(database)
+    provider.replies = [ok(VALID)]
+    body = {"data": {"rawInput": "SECRET-RAW-TEXT", "additionalContext": "SECRET-CONTEXT", "campaign": "Prueba",
+                     "investment": 1000, "clicks": 100, "previous": {"investment": 800}}}
+
+    created = post(api_client, organization_id, "owner-a", "key-snapshot-001", body).json()
+
+    report = created["deterministic_report"]
+    assert report["metrics_snapshot"] == {
+        "version": 1,
+        "metrics": {"investment": 1000.0, "clicks": 100.0},
+        "previous": {"investment": 800.0},
+    }
+    assert report["calculated"]["cpc"] == 10.0
+    assert "SECRET" not in json.dumps(report)
+
+
+def test_analyses_saved_before_the_snapshot_still_read_without_it(api_client, database, provider):  # type: ignore[no-untyped-def]
+    organization_id = owner(database)
+    user = _user_id(database, "owner-a")
+    claim = run(ledger.claim_analysis(
+        database, organization_id=organization_id, requested_by=user, campaign_id=None, metric_entry_id=None,
+        idempotency_key="key-legacy-001", input_hash="e" * 64, prompt_version="analysis-v1",
+        model_requested="primary-test", deterministic_report={"input_summary": {"campaign": "Antigua"}},
+        lease_seconds=analysis_history.LEASE_SECONDS,
+    ))
+    run(ledger.finalize_analysis(database, organization_id=organization_id, analysis_id=claim.analysis_id,
+                                 status="failed", error_code="INTERNAL_ERROR"))
+
+    detail = api_client.get(f"{url(organization_id)}/{claim.analysis_id}",
+                            headers={"Authorization": f"Bearer {make_token('owner-a')}"})
+
+    assert detail.status_code == 200
+    assert "metrics_snapshot" not in detail.json()["deterministic_report"]
+    assert detail.json()["campaign_name"] == "Antigua"

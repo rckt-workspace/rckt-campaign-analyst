@@ -25,7 +25,12 @@ from app.domain.schemas import (
 from app.security.tokens import VerifiedIdentity
 from app.services import analysis_history
 from app.services.access import OrganizationNotFoundError, PermissionDeniedError, require_role
-from app.services.analysis_history import AnalysisInProgressError, IdempotencyKeyReusedError
+from app.services.analysis_history import (
+    AnalysisInProgressError,
+    IdempotencyKeyReusedError,
+    MetricEntryMismatchError,
+    MetricEntryNotFoundError,
+)
 from app.services.campaigns import CampaignNotFoundError
 
 router = APIRouter(prefix="/api/v1/organizations/{organization_id}/analyses", tags=["analyses"])
@@ -94,6 +99,10 @@ async def create_analysis(
         raise HTTPException(status_code=409, detail="ANALYSIS_IN_PROGRESS") from None
     except CampaignNotFoundError:
         raise HTTPException(status_code=404, detail="NOT_FOUND") from None
+    except MetricEntryNotFoundError:
+        raise HTTPException(status_code=404, detail="NOT_FOUND") from None
+    except MetricEntryMismatchError:
+        raise HTTPException(status_code=422, detail="ENTRY_DOES_NOT_MATCH") from None
 
     found = await analysis_history.get_analysis(
         database, organization_id=organization_id, analysis_id=result.analysis_id

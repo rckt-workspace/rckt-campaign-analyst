@@ -151,6 +151,17 @@ class CampaignMetricRepository:
         await self._session.refresh(entry)
         return entry
 
+    async def get(
+        self, *, organization_id: uuid.UUID, campaign_id: uuid.UUID, entry_id: uuid.UUID
+    ) -> CampaignMetricEntry | None:
+        return await self._session.scalar(
+            select(CampaignMetricEntry).where(
+                CampaignMetricEntry.organization_id == organization_id,
+                CampaignMetricEntry.campaign_id == campaign_id,
+                CampaignMetricEntry.id == entry_id,
+            )
+        )
+
     async def list_for_campaign(
         self, *, organization_id: uuid.UUID, campaign_id: uuid.UUID, limit: int, offset: int
     ) -> Sequence[CampaignMetricEntry]:

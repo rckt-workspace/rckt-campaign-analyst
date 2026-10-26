@@ -23,8 +23,8 @@ from sqlalchemy.exc import DBAPIError
 
 from app.core.config import AIConfigurationError, configured_model_names
 from app.db import analysis_ledger as ledger
-from app.db.models import Analysis, AnalysisUsage
-from app.db.repositories import AnalysisRepository, CampaignRepository
+from app.db.models import Analysis, AnalysisUsage, CampaignMetricEntry
+from app.db.repositories import AnalysisRepository, CampaignMetricRepository, CampaignRepository
 from app.db.session import Database
 from app.domain.metrics import analyze_metrics
 from app.domain.schemas import AnalysisCreate, CampaignInput
@@ -44,6 +44,14 @@ class IdempotencyKeyReusedError(Exception):
     """The key belongs to a request with different input. Refused; nothing is called."""
 
 
+class MetricEntryNotFoundError(Exception):
+    """The metric entry does not exist in this campaign and organization. Also used for other organizations."""
+
+
+class MetricEntryMismatchError(Exception):
+    """The saved metric entry does not hold the text and values sent for analysis. Nothing is claimed."""
+
+
 class AnalysisInProgressError(Exception):
     """The key belongs to an analysis that is still running with a live lease. Retry later; nothing is called."""
 
@@ -54,20 +62,48 @@ class CreateResult:
     replayed: bool
 
 
-def fingerprint(data: CampaignInput, campaign_id: uuid.UUID | None) -> str:
-    """SHA-256 of the canonical input. Two requests with one key must have the same fingerprint."""
-    canonical = json.dumps(
-        {"data": data.model_dump(mode="json"), "campaign_id": str(campaign_id) if campaign_id else None,
-         "prompt_version": PROMPT_VERSION},
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
+def fingerprint(
+    data: CampaignInput, campaign_id: uuid.UUID | None, metric_entry_id: uuid.UUID | None = None
+) -> str:
+    """SHA-256 of the canonical input. Two requests with one key must have the same fingerprint.
+
+    metric_entry_id is added only when present, so fingerprints of requests without it are unchanged.
+    """
+    body = {
+        "data": data.model_dump(mode="json"),
+        "campaign_id": str(campaign_id) if campaign_id else None,
+        "prompt_version": PROMPT_VERSION,
+    }
+    if metric_entry_id is not None:
+        body["metric_entry_id"] = str(metric_entry_id)
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+# Version of the metrics_snapshot structure. Bump it when the list of fields changes.
+METRICS_SNAPSHOT_VERSION = 1
+SNAPSHOT_METRICS = (
+    "investment", "impressions", "reach", "frequency", "clicks", "ctr",
+    "cpc", "leads", "cpl", "conversions", "revenue", "roas",
+)
+
+
+def metrics_snapshot(data: CampaignInput) -> dict:
+    """The normalized metric values the engine received, as sent (not calculated).
+
+    Deliberately partial: rawInput, additionalContext and the free-text campaign fields are never copied here. Only
+    numeric metrics, current and previous, that the request carried. Absent values are omitted, not stored as null.
+    """
+    current = {key: getattr(data, key) for key in SNAPSHOT_METRICS if getattr(data, key) is not None}
+    previous = {key: getattr(data.previous, key) for key in SNAPSHOT_METRICS if getattr(data.previous, key) is not None}
+    return {"version": METRICS_SNAPSHOT_VERSION, "metrics": current, "previous": previous}
+
+
 def deterministic_report(data: CampaignInput) -> dict:
-    """Metrics computed in Python, stored with the claim. The analysis text is produced later, from the same input."""
+    """Metrics computed in Python, stored with the claim. The analysis text is produced later, from the same input.
+
+    Analyses saved before the snapshot existed have no "metrics_snapshot" key. They are never backfilled.
+    """
     report = analyze_metrics(data)
     return {
         "input_summary": {
@@ -79,6 +115,7 @@ def deterministic_report(data: CampaignInput) -> dict:
         "calculated": report.calculated,
         "comparisons": report.comparisons,
         "warnings": report.warnings,
+        "metrics_snapshot": metrics_snapshot(data),
     }
 
 
@@ -207,6 +244,21 @@ async def _run_provider_flow(
         await _close_as(database, organization_id=organization_id, analysis_id=analysis_id, error_code="ANALYSIS_ABANDONED")
 
 
+def entry_matches(entry: CampaignMetricEntry, data: CampaignInput) -> bool:
+    """True when the stored entry holds the same text, numeric metrics and previous values as the analysis input."""
+    if entry.raw_input != data.rawInput:
+        return False
+    if entry.previous_metrics != data.previous.model_dump(mode="json"):
+        return False
+    for key in SNAPSHOT_METRICS:
+        stored, sent = getattr(entry, key), getattr(data, key)
+        if (stored is None) != (sent is None):
+            return False
+        if stored is not None and float(stored) != float(sent):
+            return False
+    return True
+
+
 async def create_analysis(
     database: Database,
     *,
@@ -222,6 +274,16 @@ async def create_analysis(
             )
         if campaign is None:
             raise CampaignNotFoundError
+    if payload.metric_entry_id is not None:
+        # The explicit link is verified, never assumed: the stored entry must hold exactly what is analyzed.
+        async with database.session() as session:
+            entry = await CampaignMetricRepository(session).get(
+                organization_id=organization_id, campaign_id=payload.campaign_id, entry_id=payload.metric_entry_id
+            )
+        if entry is None:
+            raise MetricEntryNotFoundError
+        if not entry_matches(entry, payload.data):
+            raise MetricEntryMismatchError
 
     primary_model, _ = configured_model_names()
     claim = await ledger.claim_analysis(
@@ -229,9 +291,9 @@ async def create_analysis(
         organization_id=organization_id,
         requested_by=user_id,
         campaign_id=payload.campaign_id,
-        metric_entry_id=None,
+        metric_entry_id=payload.metric_entry_id,
         idempotency_key=idempotency_key,
-        input_hash=fingerprint(payload.data, payload.campaign_id),
+        input_hash=fingerprint(payload.data, payload.campaign_id, payload.metric_entry_id),
         prompt_version=PROMPT_VERSION,
         model_requested=primary_model,
         deterministic_report=deterministic_report(payload.data),
