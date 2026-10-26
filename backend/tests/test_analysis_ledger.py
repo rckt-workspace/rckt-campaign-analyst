@@ -111,13 +111,19 @@ async def drive(database, provider: SimulatedProvider, *, org, user, key, input_
         )
     else:
         final_text, model_used, used_fallback = texts[-1]
-        format_valid = is_parseable(sanitize(final_text))
-        if not format_valid and len(texts) > 1:
+        if not is_parseable(sanitize(final_text)) and len(texts) > 1:
             final_text, model_used, used_fallback = texts[0]
+        if not is_parseable(sanitize(final_text)):
+            # Same rule as the service: a format failure after the allowed retry is a failed analysis.
+            await ledger.finalize_analysis(
+                database, organization_id=org, analysis_id=claim.analysis_id, status="failed",
+                error_code="AI_INVALID_RESPONSE",
+            )
+            return claim
         await ledger.finalize_analysis(
             database, organization_id=org, analysis_id=claim.analysis_id, status="succeeded",
             analysis_markdown=sanitize(final_text), model_used=model_used, used_fallback=used_fallback,
-            format_valid=is_parseable(sanitize(final_text)), latency_ms=1,
+            format_valid=True, latency_ms=1,
         )
     return claim
 
@@ -237,12 +243,14 @@ def test_a_failed_format_retry_falls_back_and_uses_the_fallback_answer(database,
     assert stored["status"] == "succeeded" and stored["used_fallback"] is True and stored["model_used"] == FALLBACK
 
 
-def test_an_answer_that_stays_invalid_is_stored_truthfully(database, tenant, raw_engine):  # type: ignore[no-untyped-def]
+def test_an_answer_that_stays_invalid_is_stored_as_a_failure_never_as_succeeded(database, tenant, raw_engine):  # type: ignore[no-untyped-def]
     provider = SimulatedProvider(answer(INVALID_ANSWER), answer(INVALID_ANSWER))
     claim = run_driver(database, provider, tenant, "k-still-invalid")
 
     stored = analysis(raw_engine, claim.analysis_id)
-    assert stored["status"] == "succeeded" and stored["format_valid"] is False
+    assert (stored["status"], stored["error_code"]) == ("failed", "AI_INVALID_RESPONSE")
+    assert stored["analysis_markdown"] is None and stored["format_valid"] is None
+    assert len(attempts(raw_engine, claim.analysis_id)) == 2
 
 
 def test_when_every_call_fails_the_analysis_fails_with_the_last_safe_code(database, tenant, raw_engine):  # type: ignore[no-untyped-def]

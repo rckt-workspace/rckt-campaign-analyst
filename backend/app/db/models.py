@@ -266,7 +266,7 @@ class Analysis(Base):
         CheckConstraint(
             "status <> 'succeeded' OR (completed_at IS NOT NULL AND lease_expires_at IS NULL AND error_code IS NULL"
             " AND analysis_markdown IS NOT NULL AND length(btrim(analysis_markdown)) > 0"
-            " AND model_used IS NOT NULL AND format_valid IS NOT NULL)",
+            " AND model_used IS NOT NULL AND format_valid IS TRUE)",
             name="succeeded_state",
         ),
         CheckConstraint(

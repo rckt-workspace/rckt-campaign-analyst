@@ -215,6 +215,8 @@ def test_eight_simultaneous_inserts_with_one_key_leave_exactly_one_row(seeded, r
          "ck_analyses_succeeded_state"),
         ({"status": "succeeded", "lease": None, "completed": LATER, "markdown": "x", "model_used": "m"},
          "ck_analyses_succeeded_state"),
+        ({"status": "succeeded", "lease": None, "completed": LATER, "markdown": "x", "model_used": "m",
+          "format_valid": False}, "ck_analyses_succeeded_state"),
         ({"status": "succeeded", "lease": None, "completed": LATER, "markdown": "x" * 100_001, "model_used": "m",
           "format_valid": True}, "ck_analyses_markdown_length"),
         ({"status": "failed", "lease": None, "completed": LATER, "error": None}, "ck_analyses_failed_state"),
