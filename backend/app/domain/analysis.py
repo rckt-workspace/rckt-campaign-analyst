@@ -23,6 +23,7 @@ SAFE_ERROR_CODES = (
     "AI_NETWORK",  # transport failure before a response
     "AI_EMPTY",  # a response without usable text
     "AI_HTTP_ERROR",  # a non-success HTTP status; the number is stored in http_status
+    "AI_INVALID_RESPONSE",  # the answer does not follow the required format after the allowed retry
     "AI_NOT_CONFIGURED",  # missing server configuration; no call was made
     ABANDONED,  # the lease expired while the analysis was running; the owner's result is discarded
     "INTERNAL_ERROR",

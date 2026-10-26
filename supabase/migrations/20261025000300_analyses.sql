@@ -64,7 +64,7 @@ CREATE TABLE public.analyses (
   CONSTRAINT ck_analyses_metric_entry_needs_campaign CHECK (metric_entry_id IS NULL OR campaign_id IS NOT NULL),
   CONSTRAINT ck_analyses_error_code_valid CHECK (
     error_code IS NULL OR error_code IN (
-      'AI_TIMEOUT', 'AI_NETWORK', 'AI_EMPTY', 'AI_HTTP_ERROR', 'AI_NOT_CONFIGURED', 'ANALYSIS_ABANDONED', 'INTERNAL_ERROR'
+      'AI_TIMEOUT', 'AI_NETWORK', 'AI_EMPTY', 'AI_HTTP_ERROR', 'AI_INVALID_RESPONSE', 'AI_NOT_CONFIGURED', 'ANALYSIS_ABANDONED', 'INTERNAL_ERROR'
     )
   ),
   CONSTRAINT ck_analyses_running_state CHECK (
@@ -133,7 +133,7 @@ CREATE TABLE public.analysis_usage (
   CONSTRAINT ck_analysis_usage_status_valid CHECK (status IN ('reserved', 'succeeded', 'failed', 'unknown')),
   CONSTRAINT ck_analysis_usage_error_code_valid CHECK (
     error_code IS NULL OR error_code IN (
-      'AI_TIMEOUT', 'AI_NETWORK', 'AI_EMPTY', 'AI_HTTP_ERROR', 'AI_NOT_CONFIGURED', 'ANALYSIS_ABANDONED', 'INTERNAL_ERROR'
+      'AI_TIMEOUT', 'AI_NETWORK', 'AI_EMPTY', 'AI_HTTP_ERROR', 'AI_INVALID_RESPONSE', 'AI_NOT_CONFIGURED', 'ANALYSIS_ABANDONED', 'INTERNAL_ERROR'
     )
   ),
   CONSTRAINT ck_analysis_usage_http_status_range

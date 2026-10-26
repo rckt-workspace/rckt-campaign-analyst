@@ -48,6 +48,13 @@ def _int_env(name: str, default: int, minimum: int, maximum: int) -> int:
     return value
 
 
+def configured_model_names() -> tuple[str, str]:
+    """Primary and fallback model identifiers, without requiring the API key. Recorded with each analysis."""
+    primary = (os.environ.get("CHAT_PRIMARY_LLM") or DEFAULT_PRIMARY_MODEL).strip()
+    fallback = (os.environ.get("CHAT_FALLBACK_LLM") or DEFAULT_FALLBACK_MODEL).strip()
+    return primary, fallback
+
+
 def get_ai_settings() -> AISettings:
     key = os.environ.get("OPENROUTER_API_KEY", "").strip()
     if not key:

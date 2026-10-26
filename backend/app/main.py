@@ -11,6 +11,7 @@ from fastapi import Request
 from fastapi.responses import JSONResponse
 
 from app.api.campaign_routes import router as campaign_router
+from app.api.analysis_routes import router as analysis_router
 from app.api.identity import router as identity_router
 from app.api.routes import router
 from app.core.config import get_auth_settings, get_database_settings
@@ -50,6 +51,7 @@ app = FastAPI(
 app.include_router(router)
 app.include_router(identity_router)
 app.include_router(campaign_router)
+app.include_router(analysis_router)
 
 
 @app.exception_handler(DatabaseUnavailableError)
