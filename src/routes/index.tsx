@@ -109,6 +109,8 @@ function Index() {
   const [campaignsStatus, setCampaignsStatus] = useState<SavedCampaignsStatus>("loading");
   const lastPayload = useRef<NormalizedCampaign | null>(null);
   const lastKey = useRef<string | null>(null);
+  // The last saved campaign and its entry, with the exact input they hold. Used only for identical input.
+  const savedLink = useRef<{ key: string; campaignId: string; metricEntryId: string } | null>(null);
   const inFlight = useRef(false);
   const [history, setHistory] = useState<AnalysisSummary[]>([]);
   const [historyStatus, setHistoryStatus] = useState<AnalysisHistoryStatus>("loading");
@@ -144,7 +146,8 @@ function Index() {
       setSaving(true);
       setSaveResult(null);
       try {
-        await saveCampaign({ data: { data, source } });
+        const saved = await saveCampaign({ data: { data, source } });
+        savedLink.current = { key: JSON.stringify(data), campaignId: saved.id, metricEntryId: saved.metricEntryId };
         setSaveResult({ tone: "ok", text: "Campaña guardada en tu organización." });
         await refreshCampaigns();
       } catch (error) {
@@ -236,7 +239,16 @@ function Index() {
           .map((warning) => warning.message),
       );
       try {
-        const result = await analyzeCampaign({ data: { data, idempotencyKey } });
+        // The link travels only when the analyzed input is exactly the saved one. The server checks it again.
+        const linked = savedLink.current?.key === JSON.stringify(data) ? savedLink.current : null;
+        const result = await analyzeCampaign({
+          data: {
+            data,
+            idempotencyKey,
+            campaignId: linked?.campaignId,
+            metricEntryId: linked?.metricEntryId,
+          },
+        });
         setAnalysis(result.analysis);
         setStatus("success");
         void refreshHistory();

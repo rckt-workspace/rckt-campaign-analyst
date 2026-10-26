@@ -36,6 +36,9 @@ const requestSchema = z.object({
    * paid call. The browser creates it per analysis and reuses it when retrying that analysis.
    */
   idempotencyKey: z.string().min(8).max(128),
+  /** Saved campaign and its entry, only when the analyzed input is exactly the saved one. The server verifies it. */
+  campaignId: z.string().uuid().optional(),
+  metricEntryId: z.string().uuid().optional(),
   /**
    * Optional organization chosen in the UI. It is a selection only: FastAPI validates it against the
    * user's stored memberships. When omitted, the first authorized organization is used.
@@ -94,13 +97,20 @@ export const analyzeCampaign = createServerFn({ method: "POST" })
       const organizationId = await resolveOrganizationId(token, request.organizationId);
 
       // Persisted analysis: the answer is stored whatever its outcome, and a repeated key returns that stored result.
-      const record = await fastapiRequest<AnalysisRecord>(`/api/v1/organizations/${organizationId}/analyses`, {
-        token,
-        method: "POST",
-        body: { data: request.data },
-        headers: { "Idempotency-Key": request.idempotencyKey },
-        timeoutMs: 200_000,
-      });
+      const record = await fastapiRequest<AnalysisRecord>(
+        `/api/v1/organizations/${organizationId}/analyses`,
+        {
+          token,
+          method: "POST",
+          body: {
+            data: request.data,
+            ...(request.campaignId ? { campaign_id: request.campaignId } : {}),
+            ...(request.metricEntryId ? { metric_entry_id: request.metricEntryId } : {}),
+          },
+          headers: { "Idempotency-Key": request.idempotencyKey },
+          timeoutMs: 200_000,
+        },
+      );
       if (record.status === "failed") throw new Error(ANALYSIS_ERRORS.ANALYSIS_FAILED);
       if (record.status !== "succeeded" || !record.analysis_markdown?.trim()) {
         throw new Error(ANALYSIS_ERRORS.UNAVAILABLE);
@@ -191,7 +201,7 @@ export const saveCampaign = createServerFn({ method: "POST" })
           timeoutMs: 10_000,
         },
       );
-      return { id: result.campaign.id };
+      return { id: result.campaign.id, metricEntryId: result.metric_entry.id };
     } catch (error) {
       console.error("Campaign save failed");
       throw new Error(campaignErrorCode(error, ANALYSIS_ERRORS.CAMPAIGN_SAVE_FAILED));

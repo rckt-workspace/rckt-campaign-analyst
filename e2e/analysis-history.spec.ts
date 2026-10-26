@@ -42,6 +42,20 @@ test("analista: el informe analizado aparece en el historial y se puede volver a
   expectNoSecrets(await page.content());
 });
 
+test("guardar y analizar la misma campaña: el informe se crea con el vínculo verificado", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "Cargar ejemplo" }).click();
+  await page.getByRole("button", { name: "Guardar campaña" }).click();
+  await expect(page.getByText("Campaña guardada en tu organización.")).toBeVisible();
+
+  // Same input as saved: the link travels, and the server accepts it. A rejected link would show no report.
+  await analyzeButton(page).click();
+  await expectReport(page);
+  await expect(historyPanel(page).locator("button", { hasText: EXAMPLE }).first()).toBeVisible();
+});
+
 test("un fallo del proveedor queda registrado en el historial como fallido", async ({
   page,
   request,
