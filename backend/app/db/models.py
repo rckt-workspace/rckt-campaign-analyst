@@ -13,12 +13,14 @@ from decimal import Decimal
 from sqlalchemy import (
     CHAR,
     BigInteger,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
+    Integer,
     Numeric,
     String,
     Text,
@@ -32,6 +34,15 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 from app.domain.access import ROLE_VALUES
+from app.domain.analysis import (
+    ANALYSIS_STATUSES,
+    ATTEMPT_KINDS,
+    ATTEMPT_STATUSES,
+    MAX_ANALYSIS_MARKDOWN_LENGTH,
+    MAX_IDEMPOTENCY_KEY_LENGTH,
+    SAFE_ERROR_CODES,
+    quoted_list,
+)
 
 ORGANIZATION_STATUS_VALUES = ("active", "suspended")
 SLUG_PATTERN = "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"
@@ -172,6 +183,9 @@ class CampaignMetricEntry(Base):
             " AND (roas IS NULL OR roas >= 0)",
             name="non_negative",
         ),
+        UniqueConstraint(
+            "organization_id", "campaign_id", "id", name="uq_campaign_metric_entries_organization_campaign_id"
+        ),
         Index("ix_campaign_metric_entries_campaign_created", "organization_id", "campaign_id", text("created_at DESC")),
     )
 
@@ -198,3 +212,149 @@ class CampaignMetricEntry(Base):
     previous_metrics: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     created_by: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
     created_at: Mapped[datetime] = _created_at()
+
+
+class Analysis(Base):
+    """One AI analysis request. A completed analysis and its inputs are immutable; rows are never deleted (trigger).
+
+    A 'running' row is the idempotency claim: its unique (organization_id, idempotency_key) makes concurrent
+    requests with one key share a single row and a single provider call.
+    """
+
+    __tablename__ = "analyses"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "id", name="uq_analyses_organization_id_id"),
+        UniqueConstraint("organization_id", "idempotency_key", name="uq_analyses_organization_id_idempotency_key"),
+        ForeignKeyConstraint(
+            ["organization_id"], ["organizations.id"], name="fk_analyses_organization_id", ondelete="RESTRICT"
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "campaign_id"],
+            ["campaigns.organization_id", "campaigns.id"],
+            name="fk_analyses_campaign",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "campaign_id", "metric_entry_id"],
+            [
+                "campaign_metric_entries.organization_id",
+                "campaign_metric_entries.campaign_id",
+                "campaign_metric_entries.id",
+            ],
+            name="fk_analyses_metric_entry",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(["requested_by"], ["app_users.id"], name="fk_analyses_requested_by", ondelete="RESTRICT"),
+        CheckConstraint("status IN (" + quoted_list(ANALYSIS_STATUSES) + ")", name="status_valid"),
+        CheckConstraint("length(btrim(idempotency_key)) > 0", name="idempotency_key_not_blank"),
+        CheckConstraint("input_hash ~ '^[0-9a-f]{64}$'", name="input_hash_format"),
+        CheckConstraint("length(btrim(prompt_version)) > 0", name="prompt_version_not_blank"),
+        CheckConstraint("length(btrim(model_requested)) > 0", name="model_requested_not_blank"),
+        CheckConstraint("metric_entry_id IS NULL OR campaign_id IS NOT NULL", name="metric_entry_needs_campaign"),
+        CheckConstraint(
+            "error_code IS NULL OR error_code IN (" + quoted_list(SAFE_ERROR_CODES) + ")", name="error_code_valid"
+        ),
+        CheckConstraint(
+            "status <> 'running' OR (lease_expires_at IS NOT NULL AND completed_at IS NULL"
+            " AND analysis_markdown IS NULL AND error_code IS NULL)",
+            name="running_state",
+        ),
+        CheckConstraint(
+            "status <> 'succeeded' OR (completed_at IS NOT NULL AND lease_expires_at IS NULL AND error_code IS NULL"
+            " AND analysis_markdown IS NOT NULL AND length(btrim(analysis_markdown)) > 0 AND model_used IS NOT NULL)",
+            name="succeeded_state",
+        ),
+        CheckConstraint(
+            "status <> 'failed' OR (completed_at IS NOT NULL AND lease_expires_at IS NULL"
+            " AND error_code IS NOT NULL AND analysis_markdown IS NULL)",
+            name="failed_state",
+        ),
+        CheckConstraint(
+            f"analysis_markdown IS NULL OR char_length(analysis_markdown) <= {MAX_ANALYSIS_MARKDOWN_LENGTH}",
+            name="markdown_length",
+        ),
+        CheckConstraint(
+            "deterministic_report IS NULL OR jsonb_typeof(deterministic_report) = 'object'", name="report_is_object"
+        ),
+        CheckConstraint("latency_ms IS NULL OR latency_ms >= 0", name="latency_non_negative"),
+        CheckConstraint("completed_at IS NULL OR completed_at >= created_at", name="completed_after_created"),
+        Index("ix_analyses_organization_id_created_at", "organization_id", text("created_at DESC")),
+        Index(
+            "ix_analyses_organization_id_campaign_id_created_at",
+            "organization_id",
+            "campaign_id",
+            text("created_at DESC"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    campaign_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    metric_entry_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    requested_by: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(MAX_IDEMPOTENCY_KEY_LENGTH), nullable=False)
+    input_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    deterministic_report: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    analysis_markdown: Mapped[str | None] = mapped_column(Text, nullable=True)
+    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    model_requested: Mapped[str] = mapped_column(String(200), nullable=False)
+    model_used: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    used_fallback: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AnalysisUsage(Base):
+    """One provider attempt (primary or fallback). Tokens and cost are NULL unless the provider reported them."""
+
+    __tablename__ = "analysis_usage"
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "attempt_kind", name="uq_analysis_usage_analysis_attempt"),
+        ForeignKeyConstraint(
+            ["organization_id", "analysis_id"],
+            ["analyses.organization_id", "analyses.id"],
+            name="fk_analysis_usage_analysis",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("attempt_kind IN (" + quoted_list(ATTEMPT_KINDS) + ")", name="attempt_kind_valid"),
+        CheckConstraint("status IN (" + quoted_list(ATTEMPT_STATUSES) + ")", name="status_valid"),
+        CheckConstraint("length(btrim(model)) > 0", name="model_not_blank"),
+        CheckConstraint(
+            "error_code IS NULL OR error_code IN (" + quoted_list(SAFE_ERROR_CODES) + ")", name="error_code_valid"
+        ),
+        CheckConstraint(
+            "(status = 'reserved' AND error_code IS NULL AND completed_at IS NULL AND usage_reported = false)"
+            " OR (status = 'succeeded' AND error_code IS NULL AND completed_at IS NOT NULL)"
+            " OR (status = 'failed' AND error_code IS NOT NULL AND completed_at IS NOT NULL)",
+            name="state",
+        ),
+        CheckConstraint(
+            "usage_reported OR (prompt_tokens IS NULL AND completion_tokens IS NULL AND cost_micros IS NULL)",
+            name="reported_values",
+        ),
+        CheckConstraint(
+            "(prompt_tokens IS NULL OR prompt_tokens >= 0) AND (completion_tokens IS NULL OR completion_tokens >= 0)"
+            " AND (cost_micros IS NULL OR cost_micros >= 0)",
+            name="values_non_negative",
+        ),
+        CheckConstraint("completed_at IS NULL OR completed_at >= created_at", name="completed_after_created"),
+        Index("ix_analysis_usage_organization_id_created_at", "organization_id", text("created_at DESC")),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    organization_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    analysis_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    attempt_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    model: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    usage_reported: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_micros: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

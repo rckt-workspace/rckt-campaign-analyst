@@ -11,6 +11,9 @@ No editar historiales internos de Alembic, Drizzle ni Supabase CLI para corregir
 | `migrations/20261025000200_campaigns.sql` | Desarrollo local (`rckt`) | — | — | — | Aplicado con Alembic `0003_campaigns`, no con este archivo. |
 | `migrations/20261025000200_campaigns.sql` | Lovable Cloud | sin fecha registrada | responsable de RCKT (aplicada manualmente en el SQL Editor) | Verificada mediante consultas SQL según informó el responsable | Ejecutada una sola vez, después de la fundación. No volver a ejecutar. |
 | `migrations/20261025000200_campaigns.sql` | Supabase licenciado | pendiente | pendiente | pendiente | Futuro. |
+| `migrations/20261025000300_analyses.sql` | Desarrollo local (`rckt`) | — | — | — | Aplicado con Alembic `0004_analyses` en la base de prueba. No aplicado en `rckt` de desarrollo. |
+| `migrations/20261025000300_analyses.sql` | Lovable Cloud | pendiente | pendiente de aprobación del responsable de RCKT | pendiente | Propuesta para revisión (fase 2.5A). No ejecutar hasta aprobar `docs/PHASE2_ANALYSES.md`. |
+| `migrations/20261025000300_analyses.sql` | Supabase licenciado | pendiente | pendiente | pendiente | Futuro. |
 
 ## Nota sobre el registro
 
