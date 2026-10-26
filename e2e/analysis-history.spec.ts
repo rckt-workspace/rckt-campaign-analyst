@@ -46,14 +46,28 @@ test("guardar y analizar la misma campaña: el informe se crea con el vínculo v
   page,
 }) => {
   await page.goto("/");
-  await page.getByRole("button", { name: "Cargar ejemplo" }).click();
+  // Without "Información adicional": additionalContext is not certified by a link, so the link travels only then.
+  await page
+    .getByLabel("Métricas de campaña")
+    .fill(
+      [
+        "Campaña: Vínculo verificado",
+        "Canal: Meta Ads",
+        "Objetivo: Ventas",
+        "Inversión: 1000000",
+        "Clics: 500",
+        "Ventas: 10",
+      ].join("\n"),
+    );
   await page.getByRole("button", { name: "Guardar campaña" }).click();
   await expect(page.getByText("Campaña guardada en tu organización.")).toBeVisible();
 
   // Same input as saved: the link travels, and the server accepts it. A rejected link would show no report.
   await analyzeButton(page).click();
   await expectReport(page);
-  await expect(historyPanel(page).locator("button", { hasText: EXAMPLE }).first()).toBeVisible();
+  await expect(
+    historyPanel(page).locator("button", { hasText: "Vínculo verificado" }).first(),
+  ).toBeVisible();
 });
 
 test("un fallo del proveedor queda registrado en el historial como fallido", async ({

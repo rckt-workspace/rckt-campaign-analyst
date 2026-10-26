@@ -17,6 +17,13 @@ import {
 } from "@/components/campaign/AnalysisHistoryPanel";
 import { describeAnalysis } from "@/lib/analysis-labels";
 import {
+  inputKey,
+  newRequest,
+  withFreshKey,
+  type AnalysisRequest,
+  type SavedLink,
+} from "@/lib/analysis-request";
+import {
   getAnalysis,
   listAnalyses,
   type AnalysisDetail,
@@ -107,10 +114,9 @@ function Index() {
   const [saveResult, setSaveResult] = useState<SaveResult | null>(null);
   const [campaigns, setCampaigns] = useState<SavedCampaign[]>([]);
   const [campaignsStatus, setCampaignsStatus] = useState<SavedCampaignsStatus>("loading");
-  const lastPayload = useRef<NormalizedCampaign | null>(null);
-  const lastKey = useRef<string | null>(null);
+  const lastRequest = useRef<AnalysisRequest | null>(null);
   // The last saved campaign and its entry, with the exact input they hold. Used only for identical input.
-  const savedLink = useRef<{ key: string; campaignId: string; metricEntryId: string } | null>(null);
+  const savedLink = useRef<SavedLink | null>(null);
   const inFlight = useRef(false);
   const [history, setHistory] = useState<AnalysisSummary[]>([]);
   const [historyStatus, setHistoryStatus] = useState<AnalysisHistoryStatus>("loading");
@@ -147,7 +153,11 @@ function Index() {
       setSaveResult(null);
       try {
         const saved = await saveCampaign({ data: { data, source } });
-        savedLink.current = { key: JSON.stringify(data), campaignId: saved.id, metricEntryId: saved.metricEntryId };
+        savedLink.current = {
+          key: inputKey(data),
+          campaignId: saved.id,
+          metricEntryId: saved.metricEntryId,
+        };
         setSaveResult({ tone: "ok", text: "Campaña guardada en tu organización." });
         await refreshCampaigns();
       } catch (error) {
@@ -223,13 +233,13 @@ function Index() {
   );
 
   const analyze = useCallback(
-    async (data: NormalizedCampaign, key?: string) => {
+    async (request: AnalysisRequest) => {
+      const { data } = request;
       // Defense in depth: the input panel already blocks ambiguous numbers.
       if (data.issues.length > 0 || inFlight.current) return;
       inFlight.current = true;
-      lastPayload.current = data;
-      const idempotencyKey = key ?? newIdempotencyKey();
-      lastKey.current = idempotencyKey;
+      // The exact request is kept: a retry repeats its body, link and key.
+      lastRequest.current = request;
       setStatus("loading");
       setAnalysis(null);
       setNotice(null);
@@ -239,16 +249,7 @@ function Index() {
           .map((warning) => warning.message),
       );
       try {
-        // The link travels only when the analyzed input is exactly the saved one. The server checks it again.
-        const linked = savedLink.current?.key === JSON.stringify(data) ? savedLink.current : null;
-        const result = await analyzeCampaign({
-          data: {
-            data,
-            idempotencyKey,
-            campaignId: linked?.campaignId,
-            metricEntryId: linked?.metricEntryId,
-          },
-        });
+        const result = await analyzeCampaign({ data: request });
         setAnalysis(result.analysis);
         setStatus("success");
         void refreshHistory();
@@ -259,9 +260,11 @@ function Index() {
           await navigate({ to: "/login", search: { expired: true } });
           return;
         }
-        // A stored failure is final for its key: the next attempt must use a new one. Any other error may hide a
+        // A stored failure is final for its key: the next attempt must use a new key. Any other error may hide a
         // call that is still running, so the same key is kept and a retry cannot start a second paid call.
-        if (code === ANALYSIS_ERRORS.ANALYSIS_FAILED) lastKey.current = null;
+        if (code === ANALYSIS_ERRORS.ANALYSIS_FAILED) {
+          lastRequest.current = withFreshKey(request, newIdempotencyKey);
+        }
         void refreshHistory();
         console.error("Fallo el análisis de campaña", code);
         setNotice(NOTICES[code] ?? null);
@@ -274,7 +277,7 @@ function Index() {
   );
 
   const retry = useCallback(() => {
-    if (lastPayload.current) void analyze(lastPayload.current, lastKey.current ?? undefined);
+    if (lastRequest.current) void analyze(lastRequest.current);
   }, [analyze]);
 
   const handleSignOut = useCallback(async () => {
@@ -298,7 +301,9 @@ function Index() {
         <div className="mx-auto grid max-w-7xl gap-5 px-5 md:px-8 lg:grid-cols-2 lg:gap-6">
           <CampaignInputPanel
             isAnalyzing={status === "loading"}
-            onAnalyze={(data) => void analyze(data)}
+            onAnalyze={(data) =>
+              void analyze(newRequest(data, savedLink.current, newIdempotencyKey))
+            }
             isSaving={saving}
             saveResult={saveResult}
             onSave={(data, source) => void save(data, source)}
