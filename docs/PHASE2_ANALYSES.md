@@ -1,135 +1,140 @@
-# Fase 2.5A: persistencia de análisis y registro de uso (diseño)
+# Fase 2.5A: persistencia de análisis y registro de llamadas (diseño revisado)
 
-Estado: **diseño y migración para revisión**. No hay endpoints nuevos. Ejecutar la migración en Lovable Cloud
-requiere aprobación. Base: rama `feat/phase-2-4-campaign-persistence` (PR #2, Draft).
+Estado: **esquema, protocolo de escritura y pruebas listos para revisión**. No hay endpoints de análisis. La migración
+no se ha ejecutado en Lovable Cloud ni en ningún entorno remoto. Base: `feat/phase-2-5-analysis-history`, sobre
+`feat/phase-2-4-campaign-persistence` (PR #2, Draft).
 
-Migraciones:
-- SQL portable: `supabase/migrations/20261025000300_analyses.sql`
-- Alembic equivalente: `backend/migrations/versions/20261025_0004_analyses.py` (revisión `0004_analyses`)
+Migraciones (la 0004 se puede corregir porque no se ha aplicado; 0001, 0002 y 0003 no se tocan):
+- SQL portable: `supabase/migrations/20261025000300_analyses.sql` (331 líneas, revisado completo)
+- Alembic: `backend/migrations/versions/20261025_0004_analyses.py`. Sus sentencias se **generan** desde el SQL con
+  `gen_alembic_0004.py`; no se editan a mano.
 
-## 1. Tablas
+## 1. Decisiones aprobadas
 
-| Tabla | Propósito | Filas |
+1. **Acceso cerrado.** RLS habilitado en ambas tablas, sin políticas, sin GRANT a `anon` ni `authenticated`. `CLAUDE.md`
+   lo recoge. `AGENTS.md` todavía dice que las tablas nuevas necesitan GRANT: conflicto pendiente de resolver.
+2. **Límite de 100 000 caracteres** para `analysis_markdown`.
+3. **Cabecera `Idempotency-Key`** en la solicitud de análisis (se implementará en la fase 2.5B). El valor se guarda
+   como `idempotency_key`; el hash de entrada se guarda como `input_hash`.
+4. **Solo tokens y costos que el proveedor reporte.** Si no los reporta, las columnas quedan nulas. Nunca se estiman.
+
+## 2. Modelo de llamadas
+
+Una solicitud puede hacer hasta **cuatro llamadas HTTP**: `initial` (primario y, si falla, fallback) y, si la
+respuesta no cumple el formato, `format_retry` (primario y, si falla, fallback). `analysis.py` y `openrouter.py`
+muestran este flujo, y el modelo anterior, con un único intento por tipo, no lo representaba.
+
+`analysis_usage` tiene **una fila por cada llamada HTTP efectivamente intentada**:
+
+| Columna | Valores | Función |
 |---|---|---|
-| `analyses` | Una solicitud de informe. También es la reclamación de idempotencia. | Se crean en `running`; se completan una vez |
-| `analysis_usage` | Un intento al proveedor (`primary` o `fallback`). | Una por tipo y análisis; solo se completan |
+| `attempt_number` | 1–4, consecutivo | Orden de las llamadas. `UNIQUE (analysis_id, attempt_number)`. |
+| `step` | `initial`, `format_retry` | Por qué se llama. |
+| `model_role` | `primary`, `fallback` | Qué modelo configurado se usa. |
+| `UNIQUE (analysis_id, step, model_role)` | | Impide duplicados accidentales dentro de un paso. |
+| `status` | `reserved`, `succeeded`, `failed`, `unknown` | `unknown`: no se puede confirmar el resultado ni el cobro. |
+| `error_code` | Lista cerrada (ver §5) | Nunca texto del proveedor. |
+| `http_status` | 100–599 o nulo | Número de estado HTTP; no el cuerpo. |
+| `usage_reported`, `prompt_tokens`, `completion_tokens`, `cost_micros` | | Solo con `usage_reported = true`. |
 
-Cambio incremental adicional: restricción `UNIQUE (organization_id, campaign_id, id)` en
-`campaign_metric_entries`, necesaria como destino de la clave compuesta. No modifica datos ni migraciones anteriores.
+Reglas de inserción (triggers, ver §4). Un intento solo se reserva si el análisis está `running` con lease vigente,
+ningún otro intento está `reserved`, el número es el siguiente, el primer intento es `initial/primary`, un fallback
+sigue a un primario fallido del mismo paso y un reintento de formato sigue a una respuesta `initial` correcta.
 
-### `analyses`
-- Identidad y aislamiento: `organization_id`, `requested_by`, `campaign_id` opcional, `metric_entry_id` opcional.
-- Idempotencia: `idempotency_key` (1–128 caracteres), `UNIQUE (organization_id, idempotency_key)`.
-- Entrada: `input_hash` (SHA-256 en hexadecimal, 64 caracteres), `prompt_version`, `model_requested`.
-- Estado: `status` (`running`, `succeeded`, `failed`), `lease_expires_at`, `completed_at`, `error_code`.
-- Resultado: `analysis_markdown`, `deterministic_report` (objeto JSON), `model_used`, `used_fallback`, `latency_ms`.
+## 3. Análisis: estados y datos
 
-### `analysis_usage`
-- `attempt_kind` (`primary`, `fallback`), `UNIQUE (analysis_id, attempt_kind)`.
-- `status`: `reserved` (existe antes de llamar al proveedor), `succeeded`, `failed`.
-- `usage_reported`: indica si el proveedor devolvió el uso. `prompt_tokens`, `completion_tokens` y `cost_micros`
-  solo pueden tener valor si `usage_reported` es verdadero (restricción). **Nunca se estiman.**
+`analyses` se crea en `running` con su **informe determinístico** (`deterministic_report`, obligatorio), su hash de
+entrada, versión de prompt y modelo solicitado. Esos campos son inmutables desde ese momento.
 
-## 2. Aislamiento
+- `running` → `succeeded` | `failed`. Sin otras transiciones.
+- `succeeded` exige informe no vacío, `model_used`, `format_valid` y un intento `succeeded` con ese modelo y el rol
+  indicado por `used_fallback`.
+- `failed` exige `error_code` y no tiene informe.
+- `format_valid` registra si el texto guardado cumple las secciones obligatorias. Un informe que no las cumple se guarda
+  como `succeeded` con `format_valid = false`, igual que hace hoy el servicio. Es una decisión de la fase 2.5B si
+  debe cambiar.
 
-- Cada tabla tiene `organization_id` no nulo.
-- `analyses` referencia `campaigns (organization_id, id)` y `campaign_metric_entries (organization_id, campaign_id, id)`.
-  Una entrada solo puede asociarse a su propia campaña, y ambas a la misma organización.
-- `analysis_usage` referencia `analyses (organization_id, id)`: un intento no puede apuntar a un análisis ajeno.
-- Una entrada de métricas sin campaña se rechaza (`ck_analyses_metric_entry_needs_campaign`).
+## 4. Protocolo de escritura y concurrencia
 
-## 3. Estados
+Implementado en `backend/app/db/analysis_ledger.py`. Cada función es **una transacción corta**; ninguna queda abierta
+durante una llamada HTTP:
 
-Análisis: `running` → `succeeded` | `failed`. No hay otras transiciones. Un análisis completado y sus entradas
-(`organization_id`, `campaign_id`, `metric_entry_id`, `requested_by`, `idempotency_key`, `input_hash`,
-`prompt_version`, `model_requested`, `deterministic_report`, `created_at`) no cambia nunca.
+1. `claim_analysis`: `INSERT … ON CONFLICT DO NOTHING` y commit **antes** de cualquier llamada. Resultados posibles:
+   `claimed` (única vía que permite llamar al proveedor), `existing`, `expired`, `reused`.
+2. Por cada llamada: `reserve_attempt` (commit) → llamada al proveedor sin transacción abierta → `complete_attempt`.
+3. `finalize_analysis` (commit).
+4. `abandon_expired`: solo con lease vencido. Marca los intentos `reserved` como `unknown` y el análisis como `failed`
+   con `ANALYSIS_ABANDONED`, en una transacción. **No hace llamadas.**
 
-Intento: `reserved` → `succeeded` | `failed`. Un intento registrado no cambia ni se borra.
+Garantías, comprobadas contra PostgreSQL con proveedor simulado (`test_analysis_ledger.py`, 23 pruebas):
+- Dos solicitudes simultáneas con la misma clave: una sola reclamación gana; solo esa llama al proveedor.
+- La misma clave con datos distintos: `reused`, sin llamada.
+- Clave de análisis completado: devuelve el resultado guardado, sin llamada.
+- Lease vencido: `expired`; se abandona y la misma clave nunca vuelve a llamar al proveedor.
+- Un propietario con lease vencido no puede reservar, completar ni finalizar. La base lo rechaza.
+- Un propietario "zombi" no puede sobrescribir un análisis abandonado.
+- La reserva y la reclamación son visibles en otra conexión **antes** de que el proveedor responda.
 
-Códigos de error permitidos (fijos, sin texto del proveedor): `AI_TIMEOUT`, `AI_UNAVAILABLE`,
-`AI_INVALID_RESPONSE`, `AI_NOT_CONFIGURED`, `ANALYSIS_ABANDONED`, `INTERNAL_ERROR`. Cualquier otro valor se rechaza.
+### Límites: lo que no se garantiza
 
-Fallback: se registran dos intentos como máximo. Si el primario falla y el fallback responde, `used_fallback` es
-verdadero y `model_used` es el modelo del fallback. Si ambos fallan, el análisis queda `failed` con el código del último intento.
+- **No hay exactamente-una-ejecución frente a fallos de red.** Si el proveedor cobra y la respuesta se pierde, la
+  base solo sabe que el intento está `reserved` y después `unknown`. El cobro puede existir sin registro de tokens.
+- **Lease.** Debe superar el presupuesto total de la solicitud: hasta cuatro llamadas de `CHAT_TIMEOUT_MS` (45 s por
+  defecto, 120 s como máximo). La fase 2.5B fijará el valor; el margen evita que un propietario vivo pierda el lease.
+- **Lease vencido con llamada en curso.** El propietario ya no puede escribir: su resultado se descarta. El cobro, si
+  llegó a producirse, queda como `unknown`. Es la ventana de riesgo residual más relevante.
+- **Reintento con la misma clave tras un fallo.** No se reintenta automáticamente. Quien quiera reintentar envía una
+  clave nueva.
 
-## 4. Idempotencia y concurrencia
+## 5. Códigos de error
 
-La reclamación es una sola sentencia:
+Lista cerrada en `app/domain/analysis.py` y en las restricciones SQL. Cada código proviene de `openrouter.py`:
 
-```sql
-INSERT INTO analyses (...) VALUES (...)
-ON CONFLICT (organization_id, idempotency_key) DO NOTHING
-RETURNING id;
-```
+| Código | Origen |
+|---|---|
+| `AI_TIMEOUT` | Tiempo agotado (`CHAT_TIMEOUT_MS`). |
+| `AI_NETWORK` | Fallo de transporte antes de respuesta. |
+| `AI_EMPTY` | Respuesta sin texto utilizable. |
+| `AI_HTTP_ERROR` | Estado HTTP no exitoso. El número va en `http_status`. |
+| `AI_NOT_CONFIGURED` | Configuración incompleta; no se llama al proveedor. |
+| `ANALYSIS_ABANDONED` | Lease vencido mientras el análisis estaba en curso. |
+| `INTERNAL_ERROR` | Fallo interno no clasificado. |
 
-Solo una de las inserciones concurrentes con la misma clave devuelve fila. El resto no llama al proveedor.
-Probado con 8 reclamaciones simultáneas en conexiones distintas: exactamente una gana.
+El código original `AI_<status>` (p. ej. `AI_502`) no se guarda: se normaliza a `AI_HTTP_ERROR` + `http_status`.
 
-Decisiones para cada caso (a implementar en la fase 2.5B):
+## 6. Uso y costos
 
-| Situación al reintentar con la misma clave | Respuesta | Llamada al proveedor |
-|---|---|---|
-| Reclamación ganada, la petición original sigue en curso | 409 `ANALYSIS_IN_PROGRESS` | No |
-| `succeeded`, mismo `input_hash` | 200 con el informe guardado | No |
-| `failed`, mismo `input_hash` | Fallo guardado (mismo código seguro) | No |
-| `running` con lease vencido | Pasa a `failed` con `ANALYSIS_ABANDONED` (una sola transición condicionada) | No |
-| Misma clave, `input_hash` distinto | 422 `IDEMPOTENCY_KEY_REUSED` | No |
+- Hoy `openrouter.py` devuelve solo el texto. **No lee `usage`**, así que ninguna llamada real tiene tokens ni costo.
+- Antes de registrar costos: verificar el formato real de `usage` con una llamada autorizada, según
+  `PHASE2_DESIGN.md` §3.3. En esta fase no se hacen llamadas.
 
-Reglas de seguridad:
-- El `lease` debe superar el presupuesto de tiempo del proveedor (hoy 110 s) con margen. Si el lease vence mientras
-  la llamada sigue en curso, el propietario ya no podría escribir el resultado; por eso no se toma un análisis
-  `running` vigente.
-- Un análisis `running` con lease vencido nunca se reintenta con la misma clave. Si el proveedor llegó a cobrar,
-  el intento queda `reserved` como evidencia y no se registran tokens.
-- Si el propietario sigue vivo tras vencer el lease y termina, su `UPDATE` a `succeeded` falla por el trigger
-  (el análisis ya está `failed`). El resultado se descarta. Es la única ventana de cobro sin registro; se mitiga
-  con el margen del lease y con el registro `reserved` previo a la llamada.
-- Un fallo "failed" no se reintenta automáticamente con la misma clave: quien quiera reintentar envía una clave nueva.
+## 7. Seguridad
 
-## 5. Inmutabilidad (triggers)
-
-- `analyses`: no se borra; una fila completada no se modifica; en `running` solo cambian estado, lease y resultado
-  (no los campos de entrada).
-- `analysis_usage`: no se borra; un intento `reserved` puede completarse una vez; un intento completado no cambia.
-- `TRUNCATE` no se bloquea, igual que en `campaign_metric_entries` (solo lo usan pruebas y administración).
-
-## 6. Seguridad y acceso
-
-- RLS habilitado en ambas tablas, **sin políticas**. Los roles expuestos por las APIs gestionadas (`anon`,
-  `authenticated`) no reciben filas. El backend accede como propietario (`ENABLE`, no `FORCE`).
-- No se añadieron `GRANT` a `anon` ni `authenticated`, igual que en las migraciones 0002 y 0003.
-- **Pendiente de decisión:** `CLAUDE.md` indica que las tablas nuevas necesitan `GRANT` además de RLS. Mantengo el
-  patrón ya aplicado y probado porque el objetivo declarado es acceso cerrado hasta validar la identidad real.
-  Revisar con Lovable antes de abrir cualquier acceso desde la API de datos.
 - Ningún secreto, cuerpo de proveedor ni URL se guarda en ninguna columna.
-
-## 7. Uso y costos
-
-- Hoy `openrouter.py` devuelve solo el texto de la respuesta (`ChatResult`). No lee el campo `usage`.
-  Por tanto, `usage_reported` será falso y tokens y costo quedarán nulos hasta que se implemente la lectura de `usage`.
-- Antes de registrar costos: verificar el formato real de `usage` con una llamada autorizada (requisito de
-  `PHASE2_DESIGN.md`, sección 3.3). No se hacen llamadas en esta fase.
+- Aislamiento: cada clave foránea incluye `organization_id`. Una entrada de métricas se referencia con su campaña.
+  Un intento no puede escribirse en un análisis de otra organización.
 
 ## 8. Verificación
 
-- `backend/tests/test_analysis_schema.py` (21 pruebas): RLS sin políticas, ida y vuelta de la migración, aislamiento
-  entre organizaciones en campañas, entradas y intentos, unicidad de la clave, 8 reclamaciones concurrentes
-  (una ganadora), estados y formatos inválidos (uno por restricción), códigos seguros, inmutabilidad y registro de intentos.
-- `backend/tests/test_persistence.py`: lista de restricciones CHECK actualizada con las 22 nuevas.
-- Equivalencia SQL/Alembic: la migración SQL se aplicó a una base de comprobación aislada
-  (`rckt_sqlcheck_test`, creada y eliminada en el contenedor local). Tablas, índices, restricciones y triggers
-  coinciden con `rckt_test`; las dos funciones de trigger coinciden salvo sangría.
+| Comprobación | Resultado |
+|---|---|
+| `test_analysis_schema.py` (constraints, triggers, aislamiento, lease, inmutabilidad) | 35 passed |
+| `test_analysis_ledger.py` (protocolo con proveedor simulado) | 23 passed |
+| `test_persistence.py` (lista de CHECK) | 25 nombres de análisis actualizados |
+| Suite backend completa | 222 passed |
+| SQL portable aplicado a base aislada `rckt_sqlcheck_test` vs. Alembic en `rckt_test` | Tablas, índices, restricciones y triggers sin diferencias; 45 nombres de restricción idénticos; 3 funciones idénticas (ignorando espacios) |
+
+La base `rckt_test` se recreó para construir el esquema desde cero. Todas las pruebas usan solo bases `*_test` locales.
 
 ## 9. Riesgos abiertos
 
-1. Ventana de cobro sin registro: el propietario puede llamar al proveedor, perder el lease y no poder escribir.
-   Mitigación: margen del lease, `reserved` previo, no reintento con la misma clave. Riesgo residual documentado.
-2. Ausencia de tokens y costos reales hasta leer `usage`. No hay cuota fiable hasta la fase 2.6.
-3. Políticas RLS y GRANT pendientes de decisión, ver sección 6.
-4. El límite de 100 000 caracteres del informe debe confirmarse frente al tamaño real de los informes.
-5. Antes de la fase 2.5B: definir el encabezado `Idempotency-Key` frente a un campo del cuerpo.
+1. Cobro sin registro de tokens en la ventana de lease vencido (ver §4).
+2. Sin tokens ni costos reales hasta leer `usage`. No hay cuota fiable hasta la fase 2.6.
+3. `AGENTS.md` contradice `CLAUDE.md` sobre GRANT. Sin resolver, la migración sigue el criterio de acceso cerrado.
+4. `format_valid = false` se guarda como éxito. Decidir en 2.5B.
+5. El lease debe fijarse con el presupuesto real de cuatro llamadas.
 
-## 10. Lo que no se implementa todavía
+## 10. Fuera de alcance
 
-Endpoints de análisis, lectura del historial, lectura de `usage` en el proveedor, cuotas, facturación y pantallas.
-Se detiene aquí para revisar la estructura de datos.
+Endpoints de análisis, cabecera `Idempotency-Key` en la API, lectura del historial, lectura de `usage`, cuotas,
+facturación y pantallas. Se detiene aquí para revisar la estructura de datos.

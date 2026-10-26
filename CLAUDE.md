@@ -48,3 +48,13 @@ Current working branch: `chore/docker-compose-node-production`. PR #1 is a draft
 - Commit fixes on the feature branch, keeping PR #1 in draft until all applicable gates pass.
 
 Read `docs/PRODUCT_ROADMAP.md` for future work, but implement only the current phase.
+
+## Closed data access (decision, Phase 2.5A)
+
+- Tables that only FastAPI reads and writes (`analyses`, `analysis_usage`, and the campaign tables) keep row level
+  security enabled with **no policies** and **no grants** to `anon` or `authenticated`. Only the owner role used by
+  FastAPI reaches them. Why: the Data API must not expose analysis data until identity integration is verified.
+- Do not add permissive policies, general grants or public views without an explicit decision recorded in `docs/`.
+- `AGENTS.md` (Lovable sync) still says that new tables need GRANTs. That rule conflicts with this section and is
+  pending a decision; until it is resolved, this section governs the tables above.
+- Migrations already applied are never edited. Unapplied migrations may be corrected before they are run.
