@@ -136,7 +136,7 @@ class Campaign(Base):
     period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
     period_end: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_by: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
-    archived_at: Mapped[date | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()

@@ -27,6 +27,8 @@ const payloadSchema = z.object({
   }).default({}),
 });
 
+type CampaignPayload = z.infer<typeof payloadSchema>;
+
 const requestSchema = z.object({
   data: payloadSchema,
   /**
@@ -36,38 +38,52 @@ const requestSchema = z.object({
   organizationId: z.string().uuid().optional(),
 });
 
+const saveRequestSchema = z.object({
+  data: payloadSchema,
+  /** How the data was entered. Stored with the metric entry; the analysis itself does not depend on it. */
+  source: z.enum(["form", "text"]),
+  organizationId: z.string().uuid().optional(),
+});
+
+const listRequestSchema = z.object({
+  organizationId: z.string().uuid().optional(),
+});
+
+/** FastAPI response for a campaign (snake_case), as returned by the campaign endpoints. */
+type CampaignRecord = {
+  id: string;
+  name: string;
+  channel: string | null;
+  objective: string | null;
+  period_label: string | null;
+  created_at: string;
+};
+
+/** FastAPI response of the atomic create endpoint. Only the campaign id is used by the UI. */
+type CampaignWithMetricsRecord = { campaign: CampaignRecord; metric_entry: { id: string } };
+
+/** Campaign as the UI uses it. Contains only what the list shows. */
+export type SavedCampaign = {
+  id: string;
+  name: string;
+  channel: string | null;
+  objective: string | null;
+  periodLabel: string | null;
+  createdAt: string;
+};
+
 export const analyzeCampaign = createServerFn({ method: "POST" })
   .inputValidator((input: unknown) => requestSchema.parse(input))
   .handler(async ({ data: request }) => {
     // Loaded here, not at module level, so server-only code never reaches the browser bundle.
     const { fastapiRequest, FastapiError } = await import("./fastapi-client.server");
-    type Me = import("./fastapi-client.server").MeResponse;
-    const { AuthNotConfiguredError, createSupabaseServerClient } = await import("./supabase/server");
-
-    let supabase;
-    try {
-      supabase = createSupabaseServerClient();
-    } catch (error) {
-      if (error instanceof AuthNotConfiguredError) throw new Error(ANALYSIS_ERRORS.SESSION_EXPIRED);
-      throw error;
-    }
+    const { currentAccessToken, resolveOrganizationId } = await import("./campaign-session.server");
 
     // Identity is established from the signed session cookie, never from anything the browser sends.
-    const { data: claimsData, error: claimsError } = await supabase.auth.getClaims();
-    if (claimsError || !claimsData) throw new Error(ANALYSIS_ERRORS.SESSION_EXPIRED);
-
-    const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData.session?.access_token;
-    if (!token) throw new Error(ANALYSIS_ERRORS.SESSION_EXPIRED);
+    const token = await currentAccessToken();
 
     try {
-      let organizationId = request.organizationId;
-      if (!organizationId) {
-        const me = await fastapiRequest<Me>("/api/v1/me", { token, timeoutMs: 10_000 });
-        const first = me.organizations[0];
-        if (!first) throw new Error(ANALYSIS_ERRORS.NO_ORGANIZATION);
-        organizationId = first.id;
-      }
+      const organizationId = await resolveOrganizationId(token, request.organizationId);
 
       const response = await fastapiRequest<{ analysis: string }>(
         `/api/v1/organizations/${organizationId}/campaigns/analyze`,
@@ -86,5 +102,107 @@ export const analyzeCampaign = createServerFn({ method: "POST" })
       }
       console.error("Campaign analysis unavailable");
       throw new Error(ANALYSIS_ERRORS.UNAVAILABLE);
+    }
+  });
+
+/**
+ * Values are sent exactly as the user entered them. They are not rounded here: FastAPI validates the precision of
+ * each column and refuses a value it would have to round (422 CAMPAIGN_INVALID). A silent rounding of financial
+ * data would store a number the user never wrote.
+ */
+function campaignBody(data: CampaignPayload) {
+  return {
+    name: data.campaign?.trim() || "Campaña sin nombre",
+    channel: data.channel?.trim() || null,
+    objective: data.objective?.trim() || null,
+    period_label: data.period?.trim() || null,
+  };
+}
+
+function metricBody(data: CampaignPayload, source: "form" | "text") {
+  return {
+    source,
+    raw_input: data.rawInput,
+    period_label: data.period?.trim() || null,
+    investment: data.investment,
+    impressions: data.impressions,
+    reach: data.reach,
+    frequency: data.frequency,
+    clicks: data.clicks,
+    ctr: data.ctr,
+    cpc: data.cpc,
+    leads: data.leads,
+    cpl: data.cpl,
+    conversions: data.conversions,
+    revenue: data.revenue,
+    roas: data.roas,
+    previous: data.previous,
+  };
+}
+
+function toSavedCampaign(record: CampaignRecord): SavedCampaign {
+  return {
+    id: record.id,
+    name: record.name,
+    channel: record.channel,
+    objective: record.objective,
+    periodLabel: record.period_label,
+    createdAt: record.created_at,
+  };
+}
+
+/**
+ * One request. FastAPI creates the campaign and its first metric entry in a single transaction: either both are
+ * stored or neither is.
+ */
+export const saveCampaign = createServerFn({ method: "POST" })
+  .inputValidator((input: unknown) => saveRequestSchema.parse(input))
+  .handler(async ({ data: request }) => {
+    const { fastapiRequest } = await import("./fastapi-client.server");
+    const { currentAccessToken, resolveOrganizationId, campaignErrorCode } =
+      await import("./campaign-session.server");
+
+    const token = await currentAccessToken();
+
+    try {
+      const organizationId = await resolveOrganizationId(token, request.organizationId);
+      const result = await fastapiRequest<CampaignWithMetricsRecord>(
+        `/api/v1/organizations/${organizationId}/campaigns/with-metrics`,
+        {
+          token,
+          method: "POST",
+          body: {
+            campaign: campaignBody(request.data),
+            metrics: metricBody(request.data, request.source),
+          },
+          timeoutMs: 10_000,
+        },
+      );
+      return { id: result.campaign.id };
+    } catch (error) {
+      console.error("Campaign save failed");
+      throw new Error(campaignErrorCode(error, ANALYSIS_ERRORS.CAMPAIGN_SAVE_FAILED));
+    }
+  });
+
+export const listSavedCampaigns = createServerFn({ method: "GET" })
+  .inputValidator((input: unknown) => listRequestSchema.parse(input ?? {}))
+  .handler(async ({ data: request }) => {
+    const { fastapiRequest } = await import("./fastapi-client.server");
+    const { currentAccessToken, resolveOrganizationId, campaignErrorCode } =
+      await import("./campaign-session.server");
+
+    const token = await currentAccessToken();
+
+    try {
+      const organizationId = await resolveOrganizationId(token, request.organizationId);
+      const records = await fastapiRequest<CampaignRecord[]>(
+        `/api/v1/organizations/${organizationId}/campaigns`,
+        { token, timeoutMs: 10_000 },
+      );
+      return { campaigns: records.map(toSavedCampaign) };
+    } catch (error) {
+      console.error("Campaign list unavailable");
+      throw new Error(campaignErrorCode(error, ANALYSIS_ERRORS.UNAVAILABLE));
     }
   });

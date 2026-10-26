@@ -9,6 +9,7 @@
     "build:dev": "vite build --mode development",
     "build:node": "node scripts/build-node.mjs",
     "test:backend": "cd backend && python -m pytest -q tests",
+    "test:unit": "node scripts/run-unit-tests.mjs",
     "test:e2e": "node scripts/build-node.mjs && python e2e/prepare_database.py && playwright test",
     "start": "node .output/server/index.mjs",
     "typecheck": "tsc --noEmit",

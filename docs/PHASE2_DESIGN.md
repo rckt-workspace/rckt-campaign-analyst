@@ -98,7 +98,8 @@ organizations 1─* usage_monthly, audit_events
 | Acción | owner | analyst | client_viewer | platform_admin (RCKT) |
 |---|---|---|---|---|
 | Ver campañas e historial de su organización | ✅ | ✅ | ✅ | ✅ (soporte, con auditoría) |
-| Crear o editar campañas y entradas de métricas | ✅ | ✅ | ❌ | ❌ |
+| Crear campañas y registrar entradas de métricas (incluido el guardado atómico) | ✅ | ✅ | ❌ | ❌ |
+| Editar y archivar campañas | ✅ | ❌ | ❌ | ❌ |
 | Ejecutar análisis de IA | ✅ | ✅ | ❌ | ❌ |
 | Invitar miembros y cambiar roles | ✅ | ❌ | ❌ | ✅ |
 | Ver uso, costos y auditoría de su organización | ✅ | ❌ | ❌ | ✅ |
@@ -121,7 +122,8 @@ Organizaciones y miembros
 Campañas
 - `GET|POST /organizations/{org_id}/campaigns`.
 - `GET|PATCH /organizations/{org_id}/campaigns/{campaign_id}`, `POST .../archive`.
-- `GET|POST /organizations/{org_id}/campaigns/{campaign_id}/metrics`.
+- `GET|POST /organizations/{org_id}/campaigns/{campaign_id}/metrics`. Las entradas son solo de inserción: no hay `PATCH` ni `DELETE`.
+- `POST /organizations/{org_id}/campaigns/with-metrics`: crea la campaña y su primera entrada en una sola transacción (guardado atómico).
 
 Análisis
 - `POST /organizations/{org_id}/analyses` con `Idempotency-Key`. Acepta `campaign_id` opcional o un bloque de métricas sin guardar.
