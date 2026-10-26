@@ -6,6 +6,8 @@ export const ANALYSIS_ERRORS = {
   UNAVAILABLE: "CAMPAIGN_API_UNAVAILABLE",
   CAMPAIGN_INVALID: "CAMPAIGN_INVALID",
   CAMPAIGN_SAVE_FAILED: "CAMPAIGN_SAVE_FAILED",
+  /** The server stored a failed analysis. A retry needs a new key: the stored failure would just be replayed. */
+  ANALYSIS_FAILED: "ANALYSIS_FAILED",
 } as const;
 
 export type AnalysisErrorCode = (typeof ANALYSIS_ERRORS)[keyof typeof ANALYSIS_ERRORS];
