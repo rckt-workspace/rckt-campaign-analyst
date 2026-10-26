@@ -199,4 +199,3 @@ class AnalysisRepository:
             .order_by(AnalysisUsage.attempt_number)
         )
         return (await self._session.scalars(statement)).all()
-
