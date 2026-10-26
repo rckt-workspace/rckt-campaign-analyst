@@ -1,5 +1,6 @@
 """OpenRouter chat-completions transport with one configurable model fallback."""
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
@@ -34,7 +35,9 @@ async def call_model(
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> str:
     try:
-        async with httpx.AsyncClient(
+        # httpx applies its timeout to each phase (connect, write, pool, read) separately. This deadline bounds
+        # the whole call, so four calls can never exceed four times CHAT_TIMEOUT_MS plus overhead.
+        async with asyncio.timeout(settings.timeout_seconds), httpx.AsyncClient(
             timeout=httpx.Timeout(settings.timeout_seconds),
             transport=transport,
             follow_redirects=False,
@@ -55,6 +58,9 @@ async def call_model(
                     "stream": False,
                 },
             )
+    except TimeoutError as exc:
+        logger.warning("LLM total deadline exceeded on model %s", model)
+        raise RecoverableAIProviderError("AI_TIMEOUT") from exc
     except httpx.TimeoutException as exc:
         logger.warning("LLM timeout on model %s", model)
         raise RecoverableAIProviderError("AI_TIMEOUT") from exc
@@ -132,6 +138,10 @@ async def _observed_call(
     except AIProviderError as exc:
         code, status = classify_provider_error(str(exc))
         await observer.finished(token, error_code=code, http_status=status)
+        raise
+    except Exception:
+        # Unexpected failure: the call is still recorded, so no reserved row is left behind. The error is re-raised.
+        await observer.finished(token, error_code="INTERNAL_ERROR", http_status=None)
         raise
     await observer.finished(token, error_code=None, http_status=None)
     return answer

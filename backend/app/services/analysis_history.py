@@ -177,6 +177,10 @@ async def _run_provider_flow(
     except DBAPIError:
         await _close_as(database, organization_id=organization_id, analysis_id=analysis_id, error_code="INTERNAL_ERROR")
         return
+    except Exception:
+        # Never leave a running analysis behind an unexpected error: close it as failed, then surface the bug.
+        await _close_as(database, organization_id=organization_id, analysis_id=analysis_id, error_code="INTERNAL_ERROR")
+        raise
 
     final = sanitize(text)
     if not is_parseable(final):

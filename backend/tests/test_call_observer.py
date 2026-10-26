@@ -143,3 +143,23 @@ def test_without_an_observer_the_historical_call_is_unchanged():
 )
 def test_classification_only_produces_closed_codes(message, expected):
     assert classify_provider_error(message) == expected
+
+
+def test_one_call_never_exceeds_its_total_deadline(monkeypatch):
+    """A slow provider is cut off at CHAT_TIMEOUT_MS as a whole, not per httpx phase. Both steps time out in time."""
+    import time
+
+    monkeypatch.setenv("CHAT_TIMEOUT_MS", "1000")
+
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(5)
+        return ok(VALID)
+
+    recorder = Recorder()
+    started = time.monotonic()
+    with pytest.raises(openrouter.AIProviderError):
+        run(run_chat_completion(MESSAGES, transport=httpx.MockTransport(slow), observer=recorder))
+    elapsed = time.monotonic() - started
+
+    assert [event[1] for event in recorder.events if event[0] == "finished"] == ["AI_TIMEOUT", "AI_TIMEOUT"]
+    assert elapsed < 4.0, f"two timed-out calls took {elapsed:.1f}s; the deadline is not enforced"

@@ -387,3 +387,20 @@ def test_the_deterministic_report_is_plain_json(database):  # type: ignore[no-un
     report = analysis_history.deterministic_report(CampaignInput(**BODY["data"]))
     assert json.loads(json.dumps(report))["input_summary"]["campaign"] == "Prueba"
     assert is_parseable(VALID)
+
+
+def test_an_unexpected_failure_never_leaves_the_analysis_running(api_client, database, provider, monkeypatch):  # type: ignore[no-untyped-def]
+    """A bug outside the provider errors must close the analysis as failed, then surface as a server error."""
+    organization_id = owner(database)
+
+    async def broken(data, recorder=None):  # type: ignore[no-untyped-def]
+        raise RuntimeError("unexpected bug")
+
+    monkeypatch.setattr(analysis_history, "request_campaign_analysis", broken)
+    with pytest.raises(RuntimeError, match="unexpected bug"):
+        post(api_client, organization_id, "owner-a", "key-bug-001")
+
+    monkeypatch.undo()
+    listed = api_client.get(url(organization_id), headers={"Authorization": f"Bearer {make_token('owner-a')}"}).json()
+    [item] = listed["items"]
+    assert (item["status"], item["error_code"]) == ("failed", "INTERNAL_ERROR")
