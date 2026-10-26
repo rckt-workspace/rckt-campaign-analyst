@@ -285,3 +285,51 @@ Verificado con pruebas: cuando el proveedor no reporta `usage`, `usage_reported`
 | Docker Compose | `backend`, `frontend` y `db` en healthy |
 | Bundle del navegador | sin nombres ni valores de secretos ni referencias a módulos de servidor |
 | `.env` versionado | no |
+
+## 13. Trazabilidad de los informes (diagnóstico, 2026-10-26)
+
+### Qué queda persistido
+
+| Dato | Dónde | Estado |
+|---|---|---|
+| Resumen: campaña, canal, objetivo y periodo (texto) | `deterministic_report.input_summary` | Persistido como texto |
+| 7 métricas **calculadas** (CTR, CPC, CPL, CPA, ROAS, tasa de conversión, frecuencia) | `deterministic_report.calculated` | Derivadas; no son los importes originales |
+| Comparaciones con el periodo anterior: valor actual, valor anterior y variación | `deterministic_report.comparisons` | Solo para las métricas que tienen ambos valores |
+| Advertencias de coherencia | `deterministic_report.warnings` | Contienen valores reportados y calculados |
+| Texto del informe | `analysis_markdown` | Persistido |
+| Huella SHA-256 de la entrada completa (campos, `campaign_id`, versión de prompt) | `input_hash` | **Solo hash**: permite comprobar, no recuperar |
+
+### Qué no queda persistido
+
+- El texto pegado (`rawInput`) y el contexto adicional.
+- Los importes originales de las métricas que no tienen periodo anterior comparable. Por ejemplo, la inversión sin periodo anterior no se guarda como número; solo sus derivadas.
+- Los valores del periodo anterior sin valor actual.
+- El mensaje de usuario que se envió al modelo. Solo se guarda la versión del prompt del sistema, como hash del texto.
+
+### Vínculos
+
+- **Campaña:** `AnalysisCreate` acepta `campaign_id`, pero `analyzeCampaign` **nunca lo envía**. Todo informe generado desde la interfaz queda con `campaign_id` nulo. El nombre de campaña del historial es texto copiado del resumen, no un enlace.
+- **Entrada de métricas:** la API no tiene `metric_entry_id`, así que ningún informe queda vinculado a una entrada concreta.
+
+### ¿Podemos reconstruir la entrada de un informe anterior?
+
+**No completamente.** Se puede reconstruir el informe escrito, su resumen, las métricas derivadas y las comparaciones. No se puede reconstruir el texto pegado, los importes originales que no aparecen en las comparaciones, ni el mensaje enviado al modelo. La huella solo permite comprobar que una entrada concreta coincide con la usada.
+
+Los informes creados antes de este diagnóstico tienen la misma limitación.
+
+### Propuesta mínima, compatible y sin cambios de esquema
+
+1. **Guardar la entrada normalizada dentro de `deterministic_report`.** Añadir una clave `input` con `data.model_dump(mode="json")`, y `prompt_version`. Es una columna `jsonb` existente, así que no hay DDL. El trigger de inmutabilidad ya impide cambios posteriores. Coste: el texto pegado queda guardado, con el mismo tratamiento que las entradas de métricas.
+2. **Enviar `campaign_id` desde la interfaz** cuando el análisis corresponde a una campaña guardada: se usa el identificador devuelto por `saveCampaign`, y solo mientras el formulario no haya cambiado desde el guardado (comparación de la misma huella en el cliente). La API ya acepta el campo y la clave foránea compuesta ya lo valida.
+3. **Vincular a la entrada de métricas** (`metric_entry_id`) como cambio de contrato de la API, sin tocar el esquema: la clave compuesta `(organization_id, campaign_id, metric_entry_id)` ya existe. Requiere que la interfaz guarde la entrada y la reutilice.
+
+Lo que **no** se propone todavía: una tabla nueva `analysis_inputs`. Sería un cambio de esquema y solo se justifica si hay que consultar las entradas por campos.
+
+Pendiente de aprobación: la propuesta 1 afecta a la privacidad de los datos guardados y debe revisarse antes de implementarse.
+
+## 14. Estado de GitHub Actions del PR #3 (2026-10-26)
+
+Los tres jobs (`backend`, `e2e`, `compose`) terminaron en `failure` en 2–3 segundos, con **0 pasos ejecutados** y sin runner asignado.
+La anotación del check de GitHub dice literalmente: *«The job was not started because your account is locked due to a billing issue.»*
+
+Este diagnóstico se basa en esa anotación. No se ha ejecutado ningún código del proyecto en GitHub. Las pruebas remotas siguen pendientes hasta que la cuenta esté desbloqueada.
