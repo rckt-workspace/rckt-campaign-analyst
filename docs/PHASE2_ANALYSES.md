@@ -333,3 +333,71 @@ Los tres jobs (`backend`, `e2e`, `compose`) terminaron en `failure` en 2–3 seg
 La anotación del check de GitHub dice literalmente: *«The job was not started because your account is locked due to a billing issue.»*
 
 Este diagnóstico se basa en esa anotación. No se ha ejecutado ningún código del proyecto en GitHub. Las pruebas remotas siguen pendientes hasta que la cuenta esté desbloqueada.
+
+## 15. Snapshot de métricas y vínculo verificado con campañas (2026-10-26)
+
+### Snapshot dentro de `deterministic_report`
+
+Clave nueva `metrics_snapshot`, con la versión de estructura `version: 1`:
+
+```json
+"metrics_snapshot": {
+  "version": 1,
+  "metrics": {"investment": 1000.0, "clicks": 100.0},
+  "previous": {"investment": 800.0}
+}
+```
+
+- `metrics`: las métricas numéricas recibidas por el motor, tal como llegaron (no calculadas): inversión, impresiones,
+  alcance, frecuencia, clics, CTR, CPC, leads, CPL, ventas, ingresos y ROAS. Los valores ausentes se omiten.
+- `previous`: lo mismo para el periodo anterior, cuando existe.
+- **No contiene** `rawInput`, `additionalContext` ni los campos de texto de la campaña. Esos campos siguen existiendo
+  solo en `input_summary` (campaña, canal, objetivo y periodo), como antes.
+- Se añade a la columna `jsonb` existente. **No hay migración nueva**. El trigger de inmutabilidad protege el contenido.
+- Los cálculos (`calculated`), las comparaciones y las advertencias no cambian. Se comprueba que el CPC de 1000 / 100 sigue siendo 10.
+
+**Informes anteriores:** no tienen `metrics_snapshot` y no se rellenan. Se leen igual, sin esa clave. Un informe creado
+antes del snapshot no puede reconstruir sus métricas originales más allá de lo que ya contenía.
+
+**Lo que el snapshot no permite:** reconstruir el prompt o la solicitud original. Es deliberadamente parcial por privacidad:
+el texto pegado no se guarda automáticamente.
+
+### Vínculo explícito con una entrada guardada
+
+`POST …/analyses` acepta `campaign_id` y `metric_entry_id`. `metric_entry_id` exige `campaign_id` (validación 422).
+
+Verificación en el servidor antes de reclamar nada:
+1. La campaña pertenece a la organización (si no, 404 `NOT_FOUND`).
+2. La entrada pertenece a esa campaña y a esa organización (si no, 404 `NOT_FOUND`).
+3. La entrada guardada coincide con lo que se analiza: texto (`raw_input`), las 12 métricas numéricas y el periodo
+   anterior. Si no coincide, **422 `ENTRY_DOES_NOT_MATCH`** y no se crea ningún análisis ni hay llamada al proveedor.
+
+La huella de entrada incluye `metric_entry_id` solo cuando está presente. Las huellas de peticiones sin vínculo no cambian.
+
+### Interfaz
+
+- Al guardar, la interfaz recuerda el identificador de la campaña, el de la entrada y una copia exacta de los datos.
+- Al analizar, envía el vínculo **solo si los datos son idénticos** a los guardados. Si el usuario cambió algo, no se envía.
+- El servidor verifica igualmente. El vínculo nunca se decide por nombre de campaña ni se asocia a una entrada anterior
+  con datos distintos.
+
+### Límites que siguen existiendo
+
+- **Solo se vincula lo guardado desde la interfaz en esa sesión.** Un informe generado sin guardar la campaña antes no tiene vínculo.
+- **El texto pegado sí se guarda en la entrada de métricas**, como ya ocurría con el guardado. El snapshot no lo añade.
+- **Campañas guardadas antes de esta versión:** no cambian.
+- **Análisis anteriores a esta versión:** no tienen vínculo ni snapshot.
+
+### Pruebas
+
+- `test_the_snapshot_keeps_the_metrics_and_never_the_text`: métricas originales y periodo anterior presentes; texto ausente; CPC sin cambios.
+- `test_analyses_saved_before_the_snapshot_still_read_without_it`: lectura sin snapshot.
+- `test_a_linked_analysis_is_verified_and_stored_with_its_campaign`: vínculo correcto aceptado.
+- `test_a_changed_input_is_refused_before_anything_is_claimed`: entrada modificada rechazada, sin llamada ni reclamación.
+- `test_an_entry_of_another_organization_is_not_found` y `test_an_entry_of_another_campaign_is_not_found`: aislamiento.
+- `test_an_entry_without_its_campaign_is_a_validation_error`: validación.
+- `test_a_linked_replay_returns_the_stored_analysis`: idempotencia con vínculo.
+- E2E «guardar y analizar la misma campaña»: el vínculo viaja y el servidor lo acepta.
+
+Un defecto que las pruebas detectaron durante el trabajo: `entry_matches` quedó como corrutina por un error al insertar la
+función. Al ser siempre verdadera, la comprobación no rechazaba nada. Lo corregí y la prueba de entrada modificada lo cubre.
