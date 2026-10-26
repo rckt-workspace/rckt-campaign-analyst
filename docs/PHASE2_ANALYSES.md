@@ -228,3 +228,60 @@ OpenRouter ni cobros.
 - Resolver el conflicto GRANT entre `AGENTS.md` y `CLAUDE.md` antes de abrir la API de datos.
 - Cuotas y facturación (fase 2.6).
 - Cursor por fecha para el historial en lugar de `offset`.
+
+## 12. Auditoría de cierre (2026-10-26)
+
+### Rol de FastAPI y privilegios
+
+| Hecho comprobado (base local `rckt`) | Consecuencia |
+|---|---|
+| FastAPI se conecta como `rckt`, propietario de todas las tablas, **superusuario** y con `BYPASSRLS` | Como propietario, RLS no restringe al backend. Por eso la protección de RLS es frente a `anon` y `authenticated`. |
+| `FORCE ROW LEVEL SECURITY` desactivado | Activarlo sin políticas para el backend dejaría al backend sin filas. No se activa. |
+| Los roles `anon` y `authenticated` no existen en la base local | Su acceso no se puede probar localmente. Solo se puede comprobar en Lovable con `information_schema.role_table_grants`. |
+| No hay GRANT ni políticas para esos roles en el repositorio | Las migraciones 0002 a 0005 no añaden acceso. |
+
+Para producción, el rol del backend debe ser propietario **no superusuario**, o un rol de aplicación sin `BYPASSRLS`
+con los privilegios mínimos. Esto está pendiente de comprobar en el proyecto gestionado.
+
+Recomendación, no aplicada: una migración defensiva con `REVOKE ALL` sobre las tablas de análisis y de campañas
+para `anon` y `authenticated`, dentro de un bloque que compruebe que el rol existe. Requiere aprobación.
+
+### Hallazgos y correcciones
+
+| Hallazgo | Estado |
+|---|---|
+| Un timeout de httpx se aplica por fase (conexión, escritura, pool y lectura). Una llamada podía tardar hasta cuatro veces `CHAT_TIMEOUT_MS`, y el lease de 510 s no lo cubría en el peor caso. | **Corregido.** `call_model` aplica un plazo total con `asyncio.timeout`. Cuatro llamadas a 120 s suman 480 s, dentro del lease. Prueba: `test_one_call_never_exceeds_its_total_deadline`. |
+| Un error inesperado (no del proveedor) dejaba el intento `reserved` y el análisis `running` hasta que venciera el lease. | **Corregido.** El observador registra `INTERNAL_ERROR` y el servicio cierra el análisis como `failed`; después relanza el error. Prueba: `test_an_unexpected_failure_never_leaves_the_analysis_running`. |
+| El esquema permitía `succeeded` con `format_valid = false`, contra la decisión aprobada. | **Corregido** con la migración nueva **0005**. La 0004 no se modifica: está aplicada en local. |
+| Las pruebas del protocolo esperaban el comportamiento antiguo para formatos inválidos. | **Corregido.** Ahora esperan `failed` con `AI_INVALID_RESPONSE`. |
+| `AGENTS.md` y `CLAUDE.md` se contradecían sobre GRANT. | **Corregido.** Ambos documentan el acceso cerrado. `AGENTS.md` se editó fuera del bloque sincronizado con Lovable; hay que revisarlo. |
+
+Sin hallazgos en: concurrencia (una sola llamada con la misma clave), aislamiento por organización, transacciones
+cortas, compatibilidad del endpoint anterior, duplicación de consumo y exposición de secretos en el bloque del navegador.
+
+### Presupuesto de tiempo
+
+- Por llamada: como máximo `CHAT_TIMEOUT_MS`, con un tope de 120 s.
+- Por paso: primario y fallback, es decir, dos llamadas.
+- Por análisis: dos pasos, es decir, cuatro llamadas. Peor caso con el máximo configurado: 480 s, más el coste de la base.
+- Lease: 510 s. Por defecto (45 s): 180 s en el peor caso.
+- Frontend: espera 200 s. Si el navegador abandona antes, la misma clave devuelve el resultado o el estado en curso al reintentar, sin segundo cobro.
+
+### Costos y tokens desconocidos
+
+Verificado con pruebas: cuando el proveedor no reporta `usage`, `usage_reported` es falso y `prompt_tokens`,
+`completion_tokens` y `cost_micros` quedan `NULL`. El transporte actual nunca lee `usage`.
+
+### Verificación de la auditoría
+
+| Comprobación | Resultado |
+|---|---|
+| Backend, suite completa | 260 passed (incluye la compuerta de formato de la 0005) |
+| Pruebas unitarias | 25 passed |
+| TypeScript y build Node/Nitro | correctos |
+| Playwright (servicios simulados) | 32 passed |
+| Esquema SQL portable 0001–0005 frente a Alembic (base aislada) | sin diferencias |
+| Esquema de la base local `rckt` frente a la de prueba | sin diferencias; cabeza `0005_format_gate` |
+| Docker Compose | `backend`, `frontend` y `db` en healthy |
+| Bundle del navegador | sin nombres ni valores de secretos ni referencias a módulos de servidor |
+| `.env` versionado | no |

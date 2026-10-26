@@ -55,6 +55,5 @@ Read `docs/PRODUCT_ROADMAP.md` for future work, but implement only the current p
   security enabled with **no policies** and **no grants** to `anon` or `authenticated`. Only the owner role used by
   FastAPI reaches them. Why: the Data API must not expose analysis data until identity integration is verified.
 - Do not add permissive policies, general grants or public views without an explicit decision recorded in `docs/`.
-- `AGENTS.md` (Lovable sync) still says that new tables need GRANTs. That rule conflicts with this section and is
-  pending a decision; until it is resolved, this section governs the tables above.
-- Migrations already applied are never edited. Unapplied migrations may be corrected before they are run.
+- `AGENTS.md` carries the same decision (its GRANT rule was narrowed on 2026-10-26). Both files now agree.
+- A migration applied anywhere, including the local development database, is never edited. Corrections go in a new migration.
