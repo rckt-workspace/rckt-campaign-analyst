@@ -547,3 +547,67 @@ def test_analyses_saved_before_the_snapshot_still_read_without_it(api_client, da
     assert detail.status_code == 200
     assert "metrics_snapshot" not in detail.json()["deterministic_report"]
     assert detail.json()["campaign_name"] == "Antigua"
+
+
+# --- what the link certifies, and what it refuses -------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"campaign": "Otra campana"},
+        {"channel": "Google Ads"},
+        {"objective": "Ventas"},
+        {"period": "Noviembre 2026"},
+        {"additionalContext": "Contexto que el vinculo no puede certificar"},
+    ],
+)
+def test_a_link_is_refused_when_any_certified_or_unverifiable_field_differs(api_client, database, provider, changed):  # type: ignore[no-untyped-def]
+    organization_id = owner(database)
+    saved = saved_entry(api_client, organization_id, "owner-a")
+
+    response = post(api_client, organization_id, "owner-a", "key-field-" + next(iter(changed)),
+                    linked_body(saved, {**LINK_DATA, **changed}))
+
+    assert response.status_code == 422 and response.json() == {"detail": "ENTRY_DOES_NOT_MATCH"}
+    assert provider.calls == 0
+
+
+def test_renaming_the_campaign_after_saving_breaks_the_link(api_client, database, provider):  # type: ignore[no-untyped-def]
+    organization_id = owner(database)
+    saved = saved_entry(api_client, organization_id, "owner-a")
+    renamed = api_client.patch(f"{campaigns_url(organization_id)}/{saved['campaign']['id']}",
+                               json={"name": "Nombre nuevo"}, headers=bearer("owner-a"))
+    assert renamed.status_code == 200
+
+    response = post(api_client, organization_id, "owner-a", "key-renamed", linked_body(saved))
+
+    assert response.status_code == 422 and response.json() == {"detail": "ENTRY_DOES_NOT_MATCH"}
+    assert provider.calls == 0
+
+
+def test_a_retry_with_the_same_key_and_body_replays_even_after_the_campaign_was_saved(api_client, database, provider):  # type: ignore[no-untyped-def]
+    """The browser timed out after an unlinked request; the campaign was saved afterwards; the retry repeats the
+    original body. It replays the stored analysis and does not call the provider again."""
+    organization_id = owner(database)
+    provider.replies = [ok(VALID)]
+    first = post(api_client, organization_id, "owner-a", "key-retry-timeout")
+    assert first.status_code == 201
+    saved_entry(api_client, organization_id, "owner-a")
+
+    retry = post(api_client, organization_id, "owner-a", "key-retry-timeout")
+
+    assert retry.status_code == 200 and retry.json()["id"] == first.json()["id"]
+    assert provider.calls == 1
+
+
+def test_a_retry_that_adds_a_link_is_refused_without_a_call(api_client, database, provider):  # type: ignore[no-untyped-def]
+    """Adding a link changes the fingerprint, so the same key is refused. Nothing is charged."""
+    organization_id = owner(database)
+    provider.replies = [ok(VALID)]
+    post(api_client, organization_id, "owner-a", "key-retry-linked")
+    saved = saved_entry(api_client, organization_id, "owner-a")
+
+    response = post(api_client, organization_id, "owner-a", "key-retry-linked", linked_body(saved))
+
+    assert response.status_code == 422 and response.json() == {"detail": "IDEMPOTENCY_KEY_REUSED"}
+    assert provider.calls == 1

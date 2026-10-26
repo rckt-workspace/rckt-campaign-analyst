@@ -23,7 +23,7 @@ from sqlalchemy.exc import DBAPIError
 
 from app.core.config import AIConfigurationError, configured_model_names
 from app.db import analysis_ledger as ledger
-from app.db.models import Analysis, AnalysisUsage, CampaignMetricEntry
+from app.db.models import Analysis, AnalysisUsage, Campaign, CampaignMetricEntry
 from app.db.repositories import AnalysisRepository, CampaignMetricRepository, CampaignRepository
 from app.db.session import Database
 from app.domain.metrics import analyze_metrics
@@ -244,8 +244,38 @@ async def _run_provider_flow(
         await _close_as(database, organization_id=organization_id, analysis_id=analysis_id, error_code="ANALYSIS_ABANDONED")
 
 
-def entry_matches(entry: CampaignMetricEntry, data: CampaignInput) -> bool:
-    """True when the stored entry holds the same text, numeric metrics and previous values as the analysis input."""
+# Same default the interface uses when a saved campaign has no name. Kept here to compare the stored name.
+DEFAULT_CAMPAIGN_NAME = "Campaña sin nombre"
+
+
+def _text_or_none(value: str | None) -> str | None:
+    stripped = (value or "").strip()
+    return stripped or None
+
+
+def link_matches(entry: CampaignMetricEntry, campaign: Campaign, data: CampaignInput) -> bool:
+    """What an explicit link certifies, and only that.
+
+    Certified, because both sides are stored and compared:
+    - the entry's raw text, numeric metrics and previous values (the metric source);
+    - the campaign's name, channel, objective and period label, as the save step wrote them.
+
+    Not certified, so refused rather than implied: additionalContext. It is not stored anywhere, so a link
+    cannot prove it. A request that carries it is analysed without a link (see the interface).
+    """
+    if data.additionalContext is not None:
+        return False
+    expected_name = _text_or_none(data.campaign) or DEFAULT_CAMPAIGN_NAME
+    if campaign.name != expected_name:
+        return False
+    if campaign.channel != _text_or_none(data.channel) or campaign.objective != _text_or_none(data.objective):
+        return False
+    if campaign.period_label != _text_or_none(data.period):
+        return False
+    return entry_text_and_metrics_match(entry, data)
+
+
+def entry_text_and_metrics_match(entry: CampaignMetricEntry, data: CampaignInput) -> bool:
     if entry.raw_input != data.rawInput:
         return False
     if entry.previous_metrics != data.previous.model_dump(mode="json"):
@@ -267,6 +297,7 @@ async def create_analysis(
     payload: AnalysisCreate,
     idempotency_key: str,
 ) -> CreateResult:
+    campaign = None
     if payload.campaign_id is not None:
         async with database.session() as session:
             campaign = await CampaignRepository(session).get(
@@ -275,14 +306,14 @@ async def create_analysis(
         if campaign is None:
             raise CampaignNotFoundError
     if payload.metric_entry_id is not None:
-        # The explicit link is verified, never assumed: the stored entry must hold exactly what is analyzed.
+        # The explicit link is verified, never assumed: nothing is claimed unless it certifies what is analysed.
         async with database.session() as session:
             entry = await CampaignMetricRepository(session).get(
                 organization_id=organization_id, campaign_id=payload.campaign_id, entry_id=payload.metric_entry_id
             )
         if entry is None:
             raise MetricEntryNotFoundError
-        if not entry_matches(entry, payload.data):
+        if not link_matches(entry, campaign, payload.data):
             raise MetricEntryMismatchError
 
     primary_model, _ = configured_model_names()
