@@ -340,13 +340,13 @@ def test_a_replay_is_answered_even_when_the_quota_is_exhausted(api_client, datab
     assert provider.calls == 1
 
 
-def test_enforced_without_a_quota_row_answers_403_without_a_provider_call(api_client, database, provider, monkeypatch, raw_engine):  # type: ignore[no-untyped-def]
+def test_enforced_without_a_quota_row_answers_503_without_a_provider_call(api_client, database, provider, monkeypatch, raw_engine):  # type: ignore[no-untyped-def]
     _enforce(monkeypatch)
     org = owner(database, slug="quota-api-c", subject="quota-owner-c")
 
     response = post(api_client, org, "quota-owner-c", "key-api-noquota-1")
 
-    assert response.status_code == 403
+    assert response.status_code == 503
     assert response.json()["detail"] == "QUOTA_NOT_CONFIGURED"
     assert provider.calls == 0
     assert analysis_count(raw_engine, org) == 0
@@ -452,3 +452,95 @@ def test_the_operator_refuses_unknown_plans_and_negative_limits(cli_env):  # typ
         cli.main(["set-analysis-quota", "--organization-slug", "cliente-rechazado", "--plan", "gold", "--monthly-limit", "5"])
     with pytest.raises(SystemExit):
         cli.main(["set-analysis-quota", "--organization-slug", "cliente-rechazado", "--plan", "pilot", "--monthly-limit", "-1"])
+
+
+# --- audit: idempotency, double close, tenant boundary and lock ordering ------------------------------------------
+
+def attempt_count(raw_engine, analysis_id) -> int:  # type: ignore[no-untyped-def]
+    return rows(raw_engine, "SELECT count(*) AS n FROM analysis_usage WHERE analysis_id = :id", {"id": analysis_id})[0]["n"]
+
+
+def test_the_same_key_sent_twice_at_once_is_counted_once(database, raw_engine):  # type: ignore[no-untyped-def]
+    org, user = seed(database, role=None, subject="quota-same", org_slug="quota-same")
+    set_quota(database, org, limit=5)
+
+    async def race():  # type: ignore[no-untyped-def]
+        return await asyncio.gather(
+            _claim(database, org=org, user=user, key="key-same-quota-1"),
+            _claim(database, org=org, user=user, key="key-same-quota-1"),
+            return_exceptions=True,
+        )
+
+    outcomes = sorted(r.outcome for r in run(race()))
+    assert outcomes == ["claimed", "existing"]
+    assert unit_counts(raw_engine, org) == (1, 0)
+
+
+def test_a_replay_in_a_new_month_consumes_nothing_in_that_month(database, raw_engine):  # type: ignore[no-untyped-def]
+    org, user = seed(database, role=None, subject="quota-replay-m", org_slug="quota-replay-m")
+    set_quota(database, org, limit=2)
+    claim(database, org=org, user=user, key="key-replay-month-1", period=PERIOD)
+
+    replay = claim(database, org=org, user=user, key="key-replay-month-1", period=NEXT_PERIOD)
+
+    assert replay.outcome == "existing"
+    assert unit_counts(raw_engine, org, PERIOD) == (1, 0)
+    assert unit_counts(raw_engine, org, NEXT_PERIOD) == (0, 0)
+
+
+def test_a_failed_analysis_cannot_be_closed_or_released_twice(database, raw_engine):  # type: ignore[no-untyped-def]
+    org, user = seed(database, role=None, subject="quota-twice", org_slug="quota-twice")
+    set_quota(database, org, limit=1)
+    first = claim(database, org=org, user=user, key="key-twice-000001")
+    run(ledger.finalize_analysis(
+        database, organization_id=org, analysis_id=first.analysis_id, status="failed", error_code="AI_NOT_CONFIGURED",
+    ))
+
+    with pytest.raises(DBAPIError):
+        run(ledger.finalize_analysis(
+            database, organization_id=org, analysis_id=first.analysis_id, status="failed", error_code="AI_NOT_CONFIGURED",
+        ))
+    assert run(ledger.abandon_expired(database, organization_id=org, analysis_id=first.analysis_id)) is False
+
+    assert unit_counts(raw_engine, org) == (0, 1)
+
+
+def test_an_attempt_cannot_be_reserved_under_another_organization(database, raw_engine):  # type: ignore[no-untyped-def]
+    org_a, user_a = seed(database, role=None, subject="quota-tenant-a", org_slug="quota-tenant-a")
+    org_b, _ = seed(database, role=None, subject="quota-tenant-b", org_slug="quota-tenant-b")
+    set_quota(database, org_a, limit=1)
+    first = claim(database, org=org_a, user=user_a, key="key-tenant-00001")
+
+    with pytest.raises(DBAPIError):
+        run(ledger.reserve_attempt(
+            database, organization_id=org_b, analysis_id=first.analysis_id, attempt_number=1,
+            step="initial", model_role="primary", model=PRIMARY,
+        ))
+
+    assert attempt_count(raw_engine, first.analysis_id) == 0
+
+
+def test_a_reservation_waits_for_a_closing_transaction_on_the_same_analysis(database, raw_engine):  # type: ignore[no-untyped-def]
+    # Finalizing locks the analysis row before it counts attempts. A reservation takes a key-share lock on that row
+    # through its foreign key, so it must wait: no call can be reserved between the count and the release.
+    org, user = seed(database, role=None, subject="quota-lock", org_slug="quota-lock")
+    set_quota(database, org, limit=1)
+    first = claim(database, org=org, user=user, key="key-lock-0000001")
+
+    async def scenario():  # type: ignore[no-untyped-def]
+        async with raw_engine.connect() as closing:
+            await closing.execute(
+                text("SELECT id FROM analyses WHERE id = :id FOR UPDATE"), {"id": first.analysis_id}
+            )
+            reserving = asyncio.create_task(ledger.reserve_attempt(
+                database, organization_id=org, analysis_id=first.analysis_id, attempt_number=1,
+                step="initial", model_role="primary", model=PRIMARY,
+            ))
+            await asyncio.sleep(0.5)
+            waited = not reserving.done()
+            await closing.rollback()
+        await reserving
+        return waited
+
+    assert run(scenario()) is True
+    assert attempt_count(raw_engine, first.analysis_id) == 1

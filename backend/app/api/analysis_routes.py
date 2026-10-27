@@ -4,6 +4,7 @@ Transactions: the create route does not depend on get_db_session. That dependenc
 the whole request, including the provider call. Identity and authorization run in short sessions instead.
 """
 
+import logging
 import re
 import uuid
 
@@ -35,6 +36,7 @@ from app.services.analysis_history import (
 )
 from app.services.campaigns import CampaignNotFoundError
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/organizations/{organization_id}/analyses", tags=["analyses"])
 
 IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
@@ -103,7 +105,9 @@ async def create_analysis(
     except QuotaExceededError:
         raise HTTPException(status_code=429, detail="QUOTA_EXCEEDED") from None
     except QuotaNotConfiguredError:
-        raise HTTPException(status_code=403, detail="QUOTA_NOT_CONFIGURED") from None
+        # Operator configuration, not a permission: 503 with no organization details in the answer.
+        logger.error("analysis quota is not configured for the requested organization")
+        raise HTTPException(status_code=503, detail="QUOTA_NOT_CONFIGURED") from None
     except IdempotencyKeyReusedError:
         raise HTTPException(status_code=422, detail="IDEMPOTENCY_KEY_REUSED") from None
     except AnalysisInProgressError:

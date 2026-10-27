@@ -7,11 +7,13 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from app.db.repositories import MembershipRepository, OrganizationRepository, UserRepository
 from app.domain.access import Role
 from app.main import app
-from tests.api_fixtures import api_client, provider_calls, token_verifier  # noqa: F401  (pytest fixtures)
+from tests.api_fixtures import api_client, token_verifier  # noqa: F401  (pytest fixtures)
 from tests.auth_helpers import OTHER_ISSUER, make_token
 from tests.conftest import run
+from tests.test_analysis_api import VALID, ok, provider  # noqa: F401  (pytest fixtures)
 
 ANALYZE_BODY = {"rawInput": "Campaña: Prueba", "campaign": "Prueba", "investment": 1000, "clicks": 100, "impressions": 2000}
+ANALYSIS_BODY = {"data": ANALYZE_BODY}
 
 
 def seed(database, *, role: Role | None, subject: str, org_slug: str = "cliente-a", org_status: str = "active"):  # type: ignore[no-untyped-def]
@@ -31,11 +33,12 @@ def seed(database, *, role: Role | None, subject: str, org_slug: str = "cliente-
 
 
 def bearer(subject: str, **kwargs) -> dict:  # type: ignore[no-untyped-def]
-    return {"Authorization": f"Bearer {make_token(subject, **kwargs)}"}
+    # Every request in these tests carries an idempotency key, so a refusal can only come from authentication or access.
+    return {"Authorization": f"Bearer {make_token(subject, **kwargs)}", "Idempotency-Key": "key-authz-0001"}
 
 
 def analyze_url(organization_id) -> str:  # type: ignore[no-untyped-def]
-    return f"/api/v1/organizations/{organization_id}/campaigns/analyze"
+    return f"/api/v1/organizations/{organization_id}/analyses"
 
 
 # --- identity endpoint -------------------------------------------------------------------------------
@@ -82,107 +85,112 @@ def test_me_lists_only_the_organizations_the_user_belongs_to(api_client, databas
 
 # --- organization-scoped analysis ----------------------------------------------------------------------
 
-def test_anonymous_analysis_is_refused_and_never_reaches_the_provider(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_anonymous_analysis_is_refused_and_never_reaches_the_provider(api_client, database, provider):  # type: ignore[no-untyped-def]
     organization_id = seed(database, role=Role.OWNER, subject="sub-owner")
-    response = api_client.post(analyze_url(organization_id), json=ANALYZE_BODY)
+    response = api_client.post(analyze_url(organization_id), json=ANALYSIS_BODY)
     assert response.status_code == 401
-    assert provider_calls == []
+    assert provider.calls == 0
 
 
-def test_user_without_membership_gets_not_found(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_user_without_membership_gets_not_found(api_client, database, provider):  # type: ignore[no-untyped-def]
     organization_id = seed(database, role=None, subject="sub-outsider")
-    response = api_client.post(analyze_url(organization_id), json=ANALYZE_BODY, headers=bearer("sub-outsider"))
+    response = api_client.post(analyze_url(organization_id), json=ANALYSIS_BODY, headers=bearer("sub-outsider"))
     assert response.status_code == 404
-    assert provider_calls == []
+    assert provider.calls == 0
 
 
-def test_client_viewer_can_read_but_cannot_generate_paid_analysis(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_client_viewer_can_read_but_cannot_generate_paid_analysis(api_client, database, provider):  # type: ignore[no-untyped-def]
     organization_id = seed(database, role=Role.CLIENT_VIEWER, subject="sub-viewer")
-    response = api_client.post(analyze_url(organization_id), json=ANALYZE_BODY, headers=bearer("sub-viewer"))
+    response = api_client.post(analyze_url(organization_id), json=ANALYSIS_BODY, headers=bearer("sub-viewer"))
     assert response.status_code == 403
     assert response.json() == {"detail": "FORBIDDEN"}
-    assert provider_calls == []
+    assert provider.calls == 0
 
 
-def test_analyst_can_analyze(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_analyst_can_analyze(api_client, database, provider):  # type: ignore[no-untyped-def]
     organization_id = seed(database, role=Role.ANALYST, subject="sub-analyst")
-    response = api_client.post(analyze_url(organization_id), json=ANALYZE_BODY, headers=bearer("sub-analyst"))
-    assert response.status_code == 200
-    assert response.json()["analysis"].startswith("## Estado general")
-    assert len(provider_calls) == 1
+    provider.replies = [ok(VALID)]
+    response = api_client.post(analyze_url(organization_id), json=ANALYSIS_BODY, headers=bearer("sub-analyst"))
+    assert response.status_code == 201
+    assert response.json()["analysis_markdown"].startswith("## Estado general")
+    assert provider.calls == 1
 
 
-def test_owner_can_analyze(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_owner_can_analyze(api_client, database, provider):  # type: ignore[no-untyped-def]
     organization_id = seed(database, role=Role.OWNER, subject="sub-owner-ok")
-    response = api_client.post(analyze_url(organization_id), json=ANALYZE_BODY, headers=bearer("sub-owner-ok"))
-    assert response.status_code == 200
-    assert len(provider_calls) == 1
+    provider.replies = [ok(VALID)]
+    response = api_client.post(analyze_url(organization_id), json=ANALYSIS_BODY, headers=bearer("sub-owner-ok"))
+    assert response.status_code == 201
+    assert provider.calls == 1
 
 
-def test_member_of_one_organization_cannot_analyze_another(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_member_of_one_organization_cannot_analyze_another(api_client, database, provider):  # type: ignore[no-untyped-def]
     seed(database, role=Role.OWNER, subject="sub-a-owner", org_slug="cliente-a")
     other = seed(database, role=None, subject="sub-b-owner", org_slug="cliente-b")
-    response = api_client.post(analyze_url(other), json=ANALYZE_BODY, headers=bearer("sub-a-owner"))
+    response = api_client.post(analyze_url(other), json=ANALYSIS_BODY, headers=bearer("sub-a-owner"))
     assert response.status_code == 404
-    assert provider_calls == []
+    assert provider.calls == 0
 
 
-def test_suspended_organization_is_refused(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_suspended_organization_is_refused(api_client, database, provider):  # type: ignore[no-untyped-def]
     organization_id = seed(database, role=Role.OWNER, subject="sub-suspended", org_status="suspended")
-    response = api_client.post(analyze_url(organization_id), json=ANALYZE_BODY, headers=bearer("sub-suspended"))
+    response = api_client.post(analyze_url(organization_id), json=ANALYSIS_BODY, headers=bearer("sub-suspended"))
     assert response.status_code == 403
-    assert provider_calls == []
+    assert provider.calls == 0
 
 
-def test_forged_token_cannot_reach_analysis(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_forged_token_cannot_reach_analysis(api_client, database, provider):  # type: ignore[no-untyped-def]
     organization_id = seed(database, role=Role.OWNER, subject="sub-victim")
     forged = make_token("sub-victim", signing_key=ec.generate_private_key(ec.SECP256R1()))
-    response = api_client.post(analyze_url(organization_id), json=ANALYZE_BODY, headers={"Authorization": f"Bearer {forged}"})
+    response = api_client.post(analyze_url(organization_id), json=ANALYSIS_BODY, headers={"Authorization": f"Bearer {forged}"})
     assert response.status_code == 401
-    assert provider_calls == []
+    assert provider.calls == 0
 
 
-def test_expired_session_cannot_analyze(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_expired_session_cannot_analyze(api_client, database, provider):  # type: ignore[no-untyped-def]
     organization_id = seed(database, role=Role.OWNER, subject="sub-expired-owner")
     response = api_client.post(
-        analyze_url(organization_id), json=ANALYZE_BODY, headers=bearer("sub-expired-owner", expires_in=-600)
+        analyze_url(organization_id), json=ANALYSIS_BODY, headers=bearer("sub-expired-owner", expires_in=-600)
     )
     assert response.status_code == 401
-    assert provider_calls == []
+    assert provider.calls == 0
 
 
-def test_anonymous_route_from_phase_one_no_longer_exists(api_client, provider_calls):  # type: ignore[no-untyped-def]
-    response = api_client.post("/api/v1/campaigns/analyze", json=ANALYZE_BODY)
+def test_anonymous_route_from_phase_one_no_longer_exists(api_client, provider):  # type: ignore[no-untyped-def]
+    response = api_client.post("/api/v1/campaigns/analyze", json=ANALYSIS_BODY)
     assert response.status_code == 404
-    assert provider_calls == []
+    assert provider.calls == 0
 
 
-def test_invalid_organization_identifier_is_a_validation_error(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_invalid_organization_identifier_is_a_validation_error(api_client, database, provider):  # type: ignore[no-untyped-def]
     seed(database, role=Role.OWNER, subject="sub-badid")
     response = api_client.post(
-        "/api/v1/organizations/not-a-uuid/campaigns/analyze", json=ANALYZE_BODY, headers=bearer("sub-badid")
+        "/api/v1/organizations/not-a-uuid/analyses", json=ANALYSIS_BODY, headers=bearer("sub-badid")
     )
     assert response.status_code == 422
-    assert provider_calls == []
+    assert provider.calls == 0
 
 
-def test_responses_never_echo_the_token(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_responses_never_echo_the_token(api_client, database, provider):  # type: ignore[no-untyped-def]
     organization_id = seed(database, role=Role.OWNER, subject="sub-echo")
     token = make_token("sub-echo")
-    success = api_client.post(analyze_url(organization_id), json=ANALYZE_BODY, headers={"Authorization": f"Bearer {token}"})
+    provider.replies = [ok(VALID)]
+    success = api_client.post(
+        analyze_url(organization_id), json=ANALYSIS_BODY, headers={"Authorization": f"Bearer {token}", "Idempotency-Key": "key-echo-0001"}
+    )
     me = api_client.get("/api/v1/me", headers={"Authorization": f"Bearer {token}"})
     assert token not in success.text and token not in me.text
 
 
-def test_missing_identity_configuration_fails_closed(api_client, database, provider_calls):  # type: ignore[no-untyped-def]
+def test_missing_identity_configuration_fails_closed(api_client, database, provider):  # type: ignore[no-untyped-def]
     organization_id = seed(database, role=Role.OWNER, subject="sub-noconfig")
     app.state.token_verifier = None
-    response = api_client.post(analyze_url(organization_id), json=ANALYZE_BODY, headers=bearer("sub-noconfig"))
+    response = api_client.post(analyze_url(organization_id), json=ANALYSIS_BODY, headers=bearer("sub-noconfig"))
     assert response.status_code == 503
-    assert provider_calls == []
+    assert provider.calls == 0
 
 
-def test_missing_database_fails_closed(api_client, provider_calls):  # type: ignore[no-untyped-def]
+def test_missing_database_fails_closed(api_client, provider):  # type: ignore[no-untyped-def]
     app.state.database = None
     response = api_client.get("/api/v1/me", headers=bearer("sub-nodb"))
     assert response.status_code == 503
