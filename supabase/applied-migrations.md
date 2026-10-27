@@ -20,6 +20,9 @@ No editar historiales internos de Alembic, Drizzle ni Supabase CLI para corregir
 | `migrations/20261025000500_analysis_quotas.sql` (Alembic `0006_analysis_quotas`) | Desarrollo local (`rckt`) | pendiente | pendiente | pendiente | No aplicada. Decisión: no aplicar hasta aprobar los límites por organización (ver `docs/PHASE2_QUOTAS.md`). |
 | `migrations/20261025000500_analysis_quotas.sql` (Alembic `0006_analysis_quotas`) | Lovable Cloud | pendiente | pendiente de aprobación del responsable de RCKT | pendiente | No ejecutar. Revisar privilegios de `anon` y `authenticated` sobre `analysis_quotas` y `analysis_quota_usage` antes. |
 | `migrations/20261025000500_analysis_quotas.sql` (Alembic `0006_analysis_quotas`) | Supabase licenciado | pendiente | pendiente | pendiente | Futuro. |
+| `migrations/20261027000600_provider_cost.sql` (Alembic `0007_provider_cost`) | Desarrollo local (`rckt`) | pendiente | pendiente | pendiente | No aplicada. Consumo exacto del proveedor; ver `docs/PHASE2_PROVIDER_USAGE.md`. |
+| `migrations/20261027000600_provider_cost.sql` (Alembic `0007_provider_cost`) | Lovable Cloud | pendiente | pendiente de aprobación del responsable de RCKT | pendiente | No ejecutar. |
+| `migrations/20261027000600_provider_cost.sql` (Alembic `0007_provider_cost`) | Supabase licenciado | pendiente | pendiente | pendiente | Futuro. |
 
 ## Nota sobre el registro
 

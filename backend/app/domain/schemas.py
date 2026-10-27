@@ -94,6 +94,8 @@ def _as_json_number(value: Decimal) -> float:
 
 
 JsonDecimal = Annotated[Decimal, PlainSerializer(_as_json_number, return_type=float, when_used="json")]
+# Money is never sent as a float: the exact decimal text travels, so the client reads what the provider reported.
+ExactDecimal = Annotated[Decimal, PlainSerializer(lambda value: format(value, "f"), return_type=str, when_used="json")]
 Amount = Annotated[JsonDecimal, Field(ge=0, max_digits=14, decimal_places=2)]  # numeric(14,2)
 UnitCost = Annotated[JsonDecimal, Field(ge=0, max_digits=14, decimal_places=4)]  # numeric(14,4)
 Ratio = Annotated[JsonDecimal, Field(ge=0, max_digits=12, decimal_places=4)]  # numeric(12,4)
@@ -267,6 +269,7 @@ class AnalysisAttemptRead(BaseModel):
     prompt_tokens: int | None
     completion_tokens: int | None
     cost_micros: int | None
+    provider_cost: ExactDecimal | None
     created_at: datetime
     completed_at: datetime | None
 
