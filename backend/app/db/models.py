@@ -15,6 +15,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Identity,
     Date,
     DateTime,
     ForeignKey,
@@ -35,6 +36,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 from app.domain.access import ROLE_VALUES
+from app.domain.audit import AUDIT_ACTIONS, AUDIT_RESOURCE_TYPES
 from app.domain.quota import PLAN_VALUES
 from app.domain.analysis import (
     ANALYSIS_STATUSES,
@@ -432,3 +434,40 @@ class AnalysisUsage(Base):
     provider_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     created_at: Mapped[datetime] = _created_at()
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AuditEvent(Base):
+    """One audited operation. Append-only: a trigger refuses UPDATE and DELETE (migration 0008).
+
+    source says where the operation came from: 'user' (an authenticated person, actor_user_id set), 'internal' (a process
+    of the application) or 'operator_cli' (an operator procedure, with no verified person behind it: no actor is invented).
+    details is the metadata column; the attribute is not called metadata because SQLAlchemy reserves that name.
+    """
+
+    __tablename__ = "audit_events"
+    __table_args__ = (
+        ForeignKeyConstraint(["organization_id"], ["organizations.id"], name="fk_audit_events_organization_id", ondelete="RESTRICT"),
+        ForeignKeyConstraint(["actor_user_id"], ["app_users.id"], name="fk_audit_events_actor_user_id", ondelete="RESTRICT"),
+        CheckConstraint("source IN ('user', 'internal', 'operator_cli')", name="source_valid"),
+        CheckConstraint("(source = 'user') = (actor_user_id IS NOT NULL)", name="actor_matches_source"),
+        CheckConstraint(
+            "action IN (" + quoted_list(AUDIT_ACTIONS) + ")", name="action_valid"
+        ),
+        CheckConstraint(
+            "resource_type IN (" + quoted_list(AUDIT_RESOURCE_TYPES) + ")", name="resource_type_valid"
+        ),
+        CheckConstraint("length(btrim(resource_id)) > 0", name="resource_id_not_blank"),
+        CheckConstraint("jsonb_typeof(metadata) = 'object'", name="metadata_is_object"),
+        CheckConstraint("octet_length(metadata::text) <= 2048", name="metadata_size"),
+        Index("ix_audit_events_organization_id_id", "organization_id", text("id DESC")),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    organization_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    source: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    action: Mapped[str] = mapped_column(String(48), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    resource_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    details: Mapped[dict] = mapped_column("metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb"))
