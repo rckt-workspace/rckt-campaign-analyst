@@ -24,7 +24,7 @@ Estado: merge local `029a841` sobre `chore/docker-compose-node-production`. Sin 
 - `git fsck` sin errores. Sin marcadores de conflicto en archivos de texto.
 - `bun install --frozen-lockfile` acepta el lockfile regenerado.
 - Rutas protegidas: `src/routes/index.tsx` y `src/routes/login.tsx` usan `getAccount` (sesión validada con `getClaims` y membresía consultada en FastAPI).
-- Análisis: `src/lib/campaign-api.functions.ts` valida la sesión y reenvía el token a `POST /api/v1/organizations/{id}/campaigns/analyze`, que exige membresía. No existe ruta anónima de análisis.
+- Análisis: `src/lib/campaign-api.functions.ts` valida la sesión y reenvía el token a `POST /api/v1/organizations/{id}/analyses` (con `Idempotency-Key`), que exige membresía. El endpoint `campaigns/analyze` está retirado (410). No existe ruta anónima de análisis.
 - Ningún archivo fuera de `src/integrations/` importa los módulos generados por Lovable.
 - `.env`: no existía un `.env` local antes del merge; el que se eliminó fue la copia que el propio merge trajo de `main`.
 

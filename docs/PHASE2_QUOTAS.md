@@ -33,6 +33,9 @@ confirmada (ver `docs/PHASE2_ANALYSES.md`, sección 4). Un análisis sin ninguna
 
 Los reintentos de formato y el fallback **no consumen unidades adicionales**: la unidad es por análisis.
 
+- Dos peticiones simultáneas con la misma clave: una reclama y la otra recibe `existing`; se consume una sola unidad.
+- Un replay en un mes nuevo no consume la unidad de ese mes. La fila del mes puede crearse vacía (0, 0); es inofensiva.
+
 ## 3. Modelo de datos (migración `0006_analysis_quotas`)
 
 - **`analysis_quotas`**: una fila por organización con `plan` (`pilot`, `standard`, `enterprise`) y
@@ -76,13 +79,12 @@ RLS activo sin políticas, sin GRANT a `anon` ni `authenticated`, igual que el r
 
 - **`false`**: el sistema cuenta las unidades (la contabilidad siempre corre) pero no rechaza nada. Así, al activar más tarde, el
   historial de consumo ya existe.
-- **`true`**: la reserva rechaza cuando no hay unidades (**429 `QUOTA_EXCEEDED`**) o cuando falta la fila de cuota (**403 `QUOTA_NOT_CONFIGURED`**).
-  El endpoint legado `POST …/campaigns/analyze`, que no reclama ni cuenta, responde **410 `ENDPOINT_RETIRED`**: no es una vía de bypass.
+- **`true`**: la reserva rechaza cuando no hay unidades (**429 `QUOTA_EXCEEDED`**) o cuando falta la fila de cuota (**503 `QUOTA_NOT_CONFIGURED`**, error de configuración del operador, no de permisos).
+  El endpoint legado `POST …/campaigns/analyze` está **retirado de forma permanente** desde la fase 2.6A: responde siempre **410 `ENDPOINT_RETIRED`**, sin autenticación ni llamada al proveedor. Ningún consumidor lo usa (búsqueda en `src`, `e2e` y `backend/app`); sus pruebas de autorización migraron al endpoint persistente.
 - Si `ANALYSIS_QUOTA_ENFORCED` no es un valor reconocible, la creación responde **503 `QUOTA_CONFIGURATION_INVALID`** y no
   reclama nada (falla cerrada). Valores verdaderos: `1`, `true`, `yes`, `on`. Falsos: vacío, `0`, `false`, `no`, `off`.
 
-**Riesgo residual:** con el enforcement desactivado, el endpoint legado sigue funcionando y llama al proveedor sin contar.
-Antes de activar el conteo en producción conviene retirarlo siempre. Decisión pendiente; hoy solo lo cubre la activación.
+**Resuelto:** el endpoint legado ya no puede llamar al proveedor en ningún modo, así que no queda ninguna vía sin contar.
 
 Justificación del valor por defecto: sin límites comerciales aprobados, activar la restricción bloquearía a todas las
 organizaciones sin fila de cuota. Activarla requiere decidir los límites y asignarlos con el CLI antes.
@@ -107,17 +109,18 @@ Crea o actualiza la fila de cuota. Requiere `DATABASE_URL` o `DATABASE_MIGRATION
 
 ## 8. Verificación
 
-`backend/tests/test_quota.py`: 34 pruebas. Cubren la política de periodo, el flag estricto, el consumo, el agotamiento,
+`backend/tests/test_quota.py`: 38 pruebas. Cubren la política de periodo, el flag estricto, el consumo, el agotamiento,
 dos reclamaciones concurrentes con una unidad, el replay, el aislamiento por organización, el cambio de mes UTC, la cuota
 ausente, el modo sin enforcement, un fallo de BD durante la reserva, la liberación con y sin llamadas, el reintento de
 formato, el fallback, el endpoint legado y el CLI. Ningún test llama a OpenRouter real.
 
 Comprobación SQL↔Alembic: una base aislada construida con los archivos SQL 0001–0005 se comparó con `rckt_test` (construida
 por Alembic) mediante `pg_dump -s`. Sin diferencias salvo la tabla `alembic_version` (propia de Alembic) y las líneas
-`estrict` aleatorias de pg_dump. Las funciones de los triggers solo difieren en indentación.
+`
+estrict` aleatorias de pg_dump. Las funciones de los triggers solo difieren en indentación.
 
-Frontend: un 429 muestra el aviso `QUOTA_EXCEEDED`. Un 403 por cuota no configurada se muestra como «rol insuficiente»,
-porque el puente conserva solo el status y no el código. Riesgo conocido; se resuelve conservando el `detail` en el puente.
+Frontend: un 429 muestra el aviso `QUOTA_EXCEEDED`. Un 503 (cuota no configurada o configuración de enforcement inválida)
+se trata como indisponibilidad del servicio y no revela detalles internos. Un 403 vuelve a significar solo permisos.
 
 Pendiente antes de activar en producción: decidir los límites por organización, comprobar la migración en una base aislada
 con la estructura de Lovable, y verificar los privilegios de `anon` y `authenticated` sobre las tablas nuevas (ver `docs/PHASE2_ANALYSES.md`, sección 12).
