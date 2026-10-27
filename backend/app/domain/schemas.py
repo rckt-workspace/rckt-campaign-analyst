@@ -256,7 +256,7 @@ class AnalysisCreate(BaseModel):
 
 
 class AnalysisAttemptRead(BaseModel):
-    """One HTTP call to the provider, in order. Tokens and cost are null unless the provider reported them."""
+    """One HTTP call to the provider, in order. Operational fields only: every role that reads a report gets these."""
 
     attempt_number: int
     step: str
@@ -265,13 +265,18 @@ class AnalysisAttemptRead(BaseModel):
     status: str
     error_code: str | None
     http_status: int | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class AnalysisAttemptUsageRead(AnalysisAttemptRead):
+    """Owner only: what the provider reported for this call. Null means not reported, never zero."""
+
     usage_reported: bool
     prompt_tokens: int | None
     completion_tokens: int | None
     cost_micros: int | None
     provider_cost: ExactDecimal | None
-    created_at: datetime
-    completed_at: datetime | None
 
 
 class AnalysisSummaryRead(BaseModel):
@@ -294,6 +299,12 @@ class AnalysisDetailRead(AnalysisSummaryRead):
     analysis_markdown: str | None
     deterministic_report: dict
     attempts: list[AnalysisAttemptRead]
+
+
+class AnalysisDetailUsageRead(AnalysisDetailRead):
+    """Owner only. Same report, with the consumption of each call."""
+
+    attempts: list[AnalysisAttemptUsageRead]
 
 
 class AnalysisPageRead(BaseModel):

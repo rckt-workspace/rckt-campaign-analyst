@@ -170,3 +170,25 @@ secuencia en la base de datos; no se ha añadido.
 3. Peor coste por llamada (tokens máximos × precio) antes de cualquier límite monetario estricto.
 4. Llamadas sin respuesta: el consumo de un timeout sigue siendo desconocido; un límite monetario debe reservar el peor caso.
 5. Reloj del sistema: el historial ordena por `created_at`, que puede no ser estrictamente monótono (§8).
+
+## 10. Visibilidad del consumo por rol
+
+El consumo (tokens, coste y si fue reportado) es **solo del rol `owner`**, según `docs/PHASE2_DESIGN.md`, sección 4
+(«Ver uso, costos y auditoría de su organización»: owner ✅, analyst ❌, client_viewer ❌).
+
+| Endpoint | owner | analyst | client_viewer |
+|---|---|---|---|
+| `POST /organizations/{id}/analyses` (crea o repite) | con consumo | sin consumo | 403 |
+| `GET /organizations/{id}/analyses/{analysis_id}` | con consumo | sin consumo | sin consumo |
+| `GET /organizations/{id}/analyses` (historial) | sin consumo | sin consumo | sin consumo |
+
+- Para los roles que no son owner, las claves de consumo **no aparecen** en la respuesta. No son `null` ni `0`: la respuesta
+  no dice nada sobre el consumo.
+- Para el owner, un consumo no reportado aparece como `usage_reported: false` con los valores en `null`. Nunca como cero.
+- El rol se obtiene de la membresía que ya comprueba `require_role`. No hay consultas adicionales.
+- Los esquemas son `AnalysisDetailRead` y `AnalysisAttemptRead` (operacionales) y `AnalysisDetailUsageRead` y
+  `AnalysisAttemptUsageRead` (owner). Los endpoints de detalle y de creación devuelven el dict del esquema elegido; por eso
+  su `response_model` es `None` y el OpenAPI de esas dos rutas no lista los campos.
+- La interfaz no lee `attempts` ni ningún campo de consumo; el cambio no afecta a la pantalla.
+- Pruebas: `backend/tests/test_analysis_visibility.py` (8 pruebas HTTP). Forzar `with_usage=True` para todos los roles
+  hace fallar 5 de ellas.

@@ -116,7 +116,8 @@ def test_an_analyst_creates_a_persisted_analysis_with_its_call(api_client, datab
     assert [(a["attempt_number"], a["step"], a["model_role"], a["status"]) for a in body["attempts"]] == [
         (1, "initial", "primary", "succeeded"),
     ]
-    assert body["attempts"][0]["usage_reported"] is False and body["attempts"][0]["prompt_tokens"] is None
+    # An analyst reads the report but never the consumption: the keys are absent, not null (owner-only, see test_analysis_visibility).
+    assert not {"usage_reported", "prompt_tokens", "completion_tokens", "cost_micros", "provider_cost"} & set(body["attempts"][0])
     assert provider.calls == 1
 
 
