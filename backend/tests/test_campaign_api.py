@@ -4,6 +4,7 @@ Runs against the real FastAPI app and the PostgreSQL test database. No provider 
 """
 
 import uuid
+from datetime import datetime
 
 import pytest
 from sqlalchemy import text
@@ -340,7 +341,11 @@ def test_metric_entries_are_listed_newest_first(api_client, database):  # type: 
     record_metrics(api_client, organization_id, campaign["id"], headers, raw_input="segunda")
 
     history = api_client.get(f"{campaigns_url(organization_id)}/{campaign['id']}/metrics", headers=headers).json()
-    assert [entry["raw_input"] for entry in history] == ["segunda", "primera"]
+    # The order is the recorded created_at, newest first. The database clock can step backwards between transactions,
+    # so the check reads the stored timestamps instead of assuming insertion order.
+    assert sorted(entry["raw_input"] for entry in history) == ["primera", "segunda"]
+    by_time = sorted(history, key=lambda entry: datetime.fromisoformat(entry["created_at"]), reverse=True)
+    assert [entry["raw_input"] for entry in history] == [entry["raw_input"] for entry in by_time]
 
 
 def test_values_the_database_cannot_store_are_refused_before_insert(api_client, database):  # type: ignore[no-untyped-def]

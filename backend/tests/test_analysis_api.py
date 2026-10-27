@@ -363,10 +363,14 @@ def test_history_is_paginated_newest_first_and_omits_report_text(api_client, dat
 
     first = api_client.get(f"{url(organization_id)}?limit=2", headers=head).json()
     second = api_client.get(f"{url(organization_id)}?limit=2&offset=2", headers=head).json()
+    # The order is the recorded created_at, newest first. The server clock can step backwards between transactions,
+    # so the expected order is read from the stored timestamps rather than assumed from insertion order.
+    stored = {i: api_client.get(f"{url(organization_id)}/{i}", headers=head).json()["created_at"] for i in created}
+    newest_first = sorted(created, key=lambda i: stored[i], reverse=True)
 
-    assert [item["id"] for item in first["items"]] == [created[2], created[1]]
+    assert [item["id"] for item in first["items"]] == newest_first[:2]
     assert first["has_more"] is True and len(first["items"]) == 2
-    assert [item["id"] for item in second["items"]] == [created[0]] and second["has_more"] is False
+    assert [item["id"] for item in second["items"]] == newest_first[2:] and second["has_more"] is False
     assert all("analysis_markdown" not in item for item in first["items"])
     assert api_client.get(f"{url(organization_id)}?limit=0", headers=head).status_code == 422
 
