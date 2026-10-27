@@ -293,9 +293,9 @@ def test_two_simultaneous_creations_with_one_key_call_the_provider_once(database
     async def race():  # type: ignore[no-untyped-def]
         return await asyncio.gather(
             analysis_history.create_analysis(database, organization_id=organization_id, user_id=user,
-                                             payload=payload, idempotency_key="key-race-api-001"),
+                                             payload=payload, idempotency_key="key-race-api-001", quota_enforced=False),
             analysis_history.create_analysis(database, organization_id=organization_id, user_id=user,
-                                             payload=payload, idempotency_key="key-race-api-001"),
+                                             payload=payload, idempotency_key="key-race-api-001", quota_enforced=False),
             return_exceptions=True,
         )
 

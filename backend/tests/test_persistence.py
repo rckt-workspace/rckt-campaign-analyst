@@ -275,6 +275,13 @@ def test_check_constraint_names_match_the_models(test_database_url):
         "ck_analysis_usage_status_valid",
         "ck_analysis_usage_step_valid",
         "ck_analysis_usage_values_non_negative",
+        "ck_analyses_quota_period_first_day",
+        "ck_analysis_quotas_plan_valid",
+        "ck_analysis_quotas_limit_non_negative",
+        "ck_analysis_quotas_updated_after_created",
+        "ck_analysis_quota_usage_first_day",
+        "ck_analysis_quota_usage_consumed_non_negative",
+        "ck_analysis_quota_usage_released_non_negative",
     }
 
 
