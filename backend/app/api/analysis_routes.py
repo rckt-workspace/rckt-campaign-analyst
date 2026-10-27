@@ -41,6 +41,13 @@ from app.services.campaigns import CampaignNotFoundError
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/organizations/{organization_id}/analyses", tags=["analyses"])
 
+# Documentation only: the response is serialized by _detail(), which picks one of these two models per caller.
+# response_model stays None so FastAPI never re-validates the report and cannot widen or narrow what a role receives.
+DETAIL_RESPONSE_DOCS = {
+    "model": AnalysisDetailRead | AnalysisDetailUsageRead,
+    "description": "Report. The owner receives AnalysisDetailUsageRead (consumption per call); other roles receive AnalysisDetailRead.",
+}
+
 IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
@@ -88,7 +95,7 @@ def _detail(analysis, attempts, *, with_usage: bool) -> dict:  # type: ignore[no
     return detail.model_dump(mode="json")
 
 
-@router.post("", response_model=None)
+@router.post("", response_model=None, responses={200: DETAIL_RESPONSE_DOCS, 201: DETAIL_RESPONSE_DOCS})
 async def create_analysis(
     organization_id: uuid.UUID,
     payload: AnalysisCreate,
@@ -171,7 +178,7 @@ async def list_analyses(
     )
 
 
-@router.get("/{analysis_id}", response_model=None)
+@router.get("/{analysis_id}", response_model=None, responses={200: DETAIL_RESPONSE_DOCS})
 async def get_analysis(
     organization_id: uuid.UUID,
     analysis_id: uuid.UUID,

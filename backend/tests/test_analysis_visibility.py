@@ -152,3 +152,78 @@ def test_the_history_list_never_carries_consumption_for_anyone(api_client, datab
         assert page["items"], "the history must list the analysis"
         assert _consumption_keys_in(page) == set()
         assert "attempts" not in page["items"][0]
+
+
+# --- OpenAPI: the documented shapes match the two models ----------------------------------------------------------
+
+def _schema_refs(node) -> set[str]:  # type: ignore[no-untyped-def]
+    refs = set()
+    if isinstance(node, dict):
+        if "$ref" in node:
+            refs.add(node["$ref"].rsplit("/", 1)[-1])
+        for value in node.values():
+            refs |= _schema_refs(value)
+    elif isinstance(node, list):
+        for value in node:
+            refs |= _schema_refs(value)
+    return refs
+
+
+def test_openapi_documents_both_report_shapes_for_create_and_detail():
+    from app.main import app
+
+    spec = app.openapi()
+    base = "/api/v1/organizations/{organization_id}/analyses"
+    create = spec["paths"][base]["post"]["responses"]
+    detail = spec["paths"][base + "/{analysis_id}"]["get"]["responses"]
+
+    for response in (create["200"], create["201"], detail["200"]):
+        refs = _schema_refs(response["content"]["application/json"]["schema"])
+        assert refs == {"AnalysisDetailRead", "AnalysisDetailUsageRead"}
+
+    schemas = spec["components"]["schemas"]
+    usage_fields = set(schemas["AnalysisAttemptUsageRead"]["properties"])
+    operational_fields = set(schemas["AnalysisAttemptRead"]["properties"])
+    assert {"provider_cost", "prompt_tokens", "usage_reported"} <= usage_fields
+    assert not {"provider_cost", "prompt_tokens", "usage_reported", "cost_micros", "completion_tokens"} & operational_fields
+    assert _schema_refs(schemas["AnalysisDetailRead"]["properties"]["attempts"]) == {"AnalysisAttemptRead"}
+    assert _schema_refs(schemas["AnalysisDetailUsageRead"]["properties"]["attempts"]) == {"AnalysisAttemptUsageRead"}
+
+
+# --- HTTP: each role receives exactly the fields of its model, no more ------------------------------------------
+
+def test_each_role_receives_exactly_the_fields_of_its_model(api_client, database, provider):  # type: ignore[no-untyped-def]
+    from app.domain.schemas import AnalysisAttemptRead, AnalysisAttemptUsageRead, AnalysisDetailRead, AnalysisDetailUsageRead
+
+    org = owner(database, slug="vis-exact", subject="vis-owner-9")
+    add_member(database, organization_id=org, subject="vis-analyst-9", role=Role.ANALYST)
+    add_member(database, organization_id=org, subject="vis-viewer-9", role=Role.CLIENT_VIEWER)
+    analysis_id = _owner_creates_with_cost(api_client, org, "vis-owner-9", "key-vis-exact-01", provider)
+
+    owner_body = _get(api_client, org, "vis-owner-9", analysis_id).json()
+    analyst_body = _get(api_client, org, "vis-analyst-9", analysis_id).json()
+    viewer_body = _get(api_client, org, "vis-viewer-9", analysis_id).json()
+
+    assert set(owner_body) == set(AnalysisDetailUsageRead.model_fields)
+    assert set(owner_body["attempts"][0]) == set(AnalysisAttemptUsageRead.model_fields)
+    for body in (analyst_body, viewer_body):
+        assert set(body) == set(AnalysisDetailRead.model_fields)
+        assert set(body["attempts"][0]) == set(AnalysisAttemptRead.model_fields)
+
+
+def test_create_and_replay_keep_their_status_codes_and_their_role_fields(api_client, database, provider):  # type: ignore[no-untyped-def]
+    org = owner(database, slug="vis-codes", subject="vis-owner-10")
+    add_member(database, organization_id=org, subject="vis-analyst-10", role=Role.ANALYST)
+    provider.replies = [reply(VALID, '{"prompt_tokens":3,"cost":' + REPORTED_COST + "}")]
+
+    created = post(api_client, org, "vis-analyst-10", "key-vis-codes-01")
+    replay_owner = post(api_client, org, "vis-owner-10", "key-vis-codes-01")
+    invalid = api_client.post(_analysis_path(org), json={"data": {"rawInput": "x", "unexpected": 1}},
+                              headers={"Authorization": f"Bearer {make_token('vis-analyst-10')}", "Idempotency-Key": "key-vis-codes-02"})
+
+    assert created.status_code == 201 and replay_owner.status_code == 200
+    assert replay_owner.headers["Idempotent-Replayed"] == "true"
+    assert invalid.status_code == 422
+    assert _consumption_keys_in(created.json()) == set()
+    assert replay_owner.json()["attempts"][0]["provider_cost"] == REPORTED_COST
+    assert provider.calls == 1

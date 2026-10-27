@@ -188,7 +188,9 @@ El consumo (tokens, coste y si fue reportado) es **solo del rol `owner`**, segú
 - El rol se obtiene de la membresía que ya comprueba `require_role`. No hay consultas adicionales.
 - Los esquemas son `AnalysisDetailRead` y `AnalysisAttemptRead` (operacionales) y `AnalysisDetailUsageRead` y
   `AnalysisAttemptUsageRead` (owner). Los endpoints de detalle y de creación devuelven el dict del esquema elegido; por eso
-  su `response_model` es `None` y el OpenAPI de esas dos rutas no lista los campos.
+  su `response_model` es `None` para que FastAPI no vuelva a validar ni a filtrar el informe. Ambos modelos se documentan
+  en OpenAPI con `responses` (`anyOf` de `AnalysisDetailRead` y `AnalysisDetailUsageRead`), y lo comprueba una prueba del
+  esquema generado por `app.openapi()`.
 - La interfaz no lee `attempts` ni ningún campo de consumo; el cambio no afecta a la pantalla.
 - Pruebas: `backend/tests/test_analysis_visibility.py` (8 pruebas HTTP). Forzar `with_usage=True` para todos los roles
   hace fallar 5 de ellas.
