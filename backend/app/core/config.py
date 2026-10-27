@@ -75,6 +75,24 @@ def get_ai_settings() -> AISettings:
     )
 
 
+class QuotaConfigurationError(Exception):
+    """ANALYSIS_QUOTA_ENFORCED has a value that is neither true nor false. Fails closed: nothing is claimed."""
+
+
+_TRUE_VALUES = ("1", "true", "yes", "on")
+_FALSE_VALUES = ("", "0", "false", "no", "off")
+
+
+def analysis_quota_enforced() -> bool:
+    """Whether quotas refuse analyses (429) and retire the legacy endpoint (410). Default false: count, never refuse."""
+    raw = os.environ.get("ANALYSIS_QUOTA_ENFORCED", "").strip().lower()
+    if raw in _TRUE_VALUES:
+        return True
+    if raw in _FALSE_VALUES:
+        return False
+    raise QuotaConfigurationError("ANALYSIS_QUOTA_ENFORCED")
+
+
 class DatabaseConfigurationError(Exception):
     """Invalid DATABASE_URL. The message never includes the URL or its password."""
 
