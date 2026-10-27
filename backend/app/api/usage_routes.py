@@ -11,15 +11,18 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_database, get_db_session
 from app.core.config import QuotaConfigurationError, analysis_quota_enforced
 from app.db.models import AppUser
-from app.db.session import Database
+from app.db.session import Database, DatabaseUnavailableError
 from app.domain.access import ADMIN_ROLES
+from app.domain.audit import AuditDraft
 from app.domain.schemas import UsageReportRead
 from app.domain.usage_report import PERIOD_PATTERN, current_period, parse_period
+from app.services import audit as audit_service
 from app.services import usage_report as usage_service
 from app.services.access import OrganizationNotFoundError, PermissionDeniedError, require_role
 
@@ -34,7 +37,7 @@ router = APIRouter(prefix="/api/v1/organizations/{organization_id}/usage", tags=
         403: {"description": "Authenticated member without the owner role, or organization not active."},
         404: {"description": "No membership in this organization."},
         422: {"description": "period is not YYYY-MM."},
-        503: {"description": "ANALYSIS_QUOTA_ENFORCED has an invalid value."},
+        503: {"description": "ANALYSIS_QUOTA_ENFORCED has an invalid value, or the access could not be audited."},
     },
 )
 async def usage_report(
@@ -57,6 +60,21 @@ async def usage_report(
         raise HTTPException(status_code=503, detail="QUOTA_CONFIGURATION_INVALID") from None
 
     chosen = parse_period(period) if period is not None else current_period(datetime.now(UTC))
-    return await usage_service.usage_report(
+    report = await usage_service.usage_report(
         database, organization_id=organization_id, period=chosen, quota_enforced=enforced
     )
+    # Authorized and computed: the access is recorded before the report is delivered. If the record fails, the
+    # report is not delivered, so nobody reads consumption that was not audited.
+    try:
+        await audit_service.record_event(database, AuditDraft(
+            organization_id=organization_id,
+            action="usage.report_accessed",
+            resource_id=chosen.label,
+            source="user",
+            actor_user_id=user.id,
+            details={"period": chosen.label},
+        ))
+    except (DBAPIError, DatabaseUnavailableError):
+        logger.error("usage report access could not be audited; report not delivered")
+        raise HTTPException(status_code=503, detail="AUDIT_UNAVAILABLE") from None
+    return report
