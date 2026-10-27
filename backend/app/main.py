@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 from app.api.campaign_routes import router as campaign_router
 from app.api.analysis_routes import router as analysis_router
 from app.api.usage_routes import router as usage_router
+from app.api.audit_routes import router as audit_router
 from app.api.identity import router as identity_router
 from app.api.routes import router
 from app.core.config import get_auth_settings, get_database_settings
@@ -54,6 +55,7 @@ app.include_router(identity_router)
 app.include_router(campaign_router)
 app.include_router(analysis_router)
 app.include_router(usage_router)
+app.include_router(audit_router)
 
 
 @app.exception_handler(DatabaseUnavailableError)
