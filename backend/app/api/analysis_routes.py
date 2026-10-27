@@ -14,7 +14,9 @@ from app.api.deps import get_current_user, get_database, get_db_session, get_ver
 from app.db.models import AppUser
 from app.db.repositories import UserRepository
 from app.db.session import Database
+from app.core.config import QuotaConfigurationError, analysis_quota_enforced
 from app.domain.access import PAID_AI_ROLES, VIEW_ROLES
+from app.domain.quota import QuotaExceededError, QuotaNotConfiguredError
 from app.domain.schemas import (
     AnalysisAttemptRead,
     AnalysisCreate,
@@ -82,6 +84,10 @@ async def create_analysis(
         raise HTTPException(status_code=400, detail="IDEMPOTENCY_KEY_REQUIRED")
     if not IDEMPOTENCY_KEY_PATTERN.match(idempotency_key):
         raise HTTPException(status_code=400, detail="IDEMPOTENCY_KEY_INVALID")
+    try:
+        quota_enforced = analysis_quota_enforced()
+    except QuotaConfigurationError:
+        raise HTTPException(status_code=503, detail="QUOTA_CONFIGURATION_INVALID") from None
 
     user_id = await _resolve_user(database, identity)
     await _authorize(database, organization_id=organization_id, user_id=user_id, allowed=PAID_AI_ROLES)
@@ -92,7 +98,12 @@ async def create_analysis(
             user_id=user_id,
             payload=payload,
             idempotency_key=idempotency_key,
+            quota_enforced=quota_enforced,
         )
+    except QuotaExceededError:
+        raise HTTPException(status_code=429, detail="QUOTA_EXCEEDED") from None
+    except QuotaNotConfiguredError:
+        raise HTTPException(status_code=403, detail="QUOTA_NOT_CONFIGURED") from None
     except IdempotencyKeyReusedError:
         raise HTTPException(status_code=422, detail="IDEMPOTENCY_KEY_REUSED") from None
     except AnalysisInProgressError:

@@ -18,6 +18,7 @@ import time
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from sqlalchemy.exc import DBAPIError
 
@@ -27,6 +28,7 @@ from app.db.models import Analysis, AnalysisUsage, Campaign, CampaignMetricEntry
 from app.db.repositories import AnalysisRepository, CampaignMetricRepository, CampaignRepository
 from app.db.session import Database
 from app.domain.metrics import analyze_metrics
+from app.domain.quota import quota_period_for
 from app.domain.schemas import AnalysisCreate, CampaignInput
 from app.integrations.openrouter import AIProviderError, CallObserver
 from app.services.analysis import SYSTEM_PROMPT, is_parseable, request_campaign_analysis, sanitize
@@ -296,7 +298,12 @@ async def create_analysis(
     user_id: uuid.UUID,
     payload: AnalysisCreate,
     idempotency_key: str,
+    quota_enforced: bool,
 ) -> CreateResult:
+    """Creates or replays one analysis. quota_enforced is passed explicitly: there is no default that could skip quotas.
+
+    Raises QuotaExceededError or QuotaNotConfiguredError only when enforcement is on; nothing is claimed in that case.
+    """
     campaign = None
     if payload.campaign_id is not None:
         async with database.session() as session:
@@ -317,6 +324,7 @@ async def create_analysis(
             raise MetricEntryMismatchError
 
     primary_model, _ = configured_model_names()
+    # Counted in the UTC month of the claim. A replay is never counted again (see ledger.claim_analysis).
     claim = await ledger.claim_analysis(
         database,
         organization_id=organization_id,
@@ -329,6 +337,8 @@ async def create_analysis(
         model_requested=primary_model,
         deterministic_report=deterministic_report(payload.data),
         lease_seconds=LEASE_SECONDS,
+        quota_period=quota_period_for(datetime.now(timezone.utc)),
+        enforce_quota=quota_enforced,
     )
 
     if claim.outcome == "reused":

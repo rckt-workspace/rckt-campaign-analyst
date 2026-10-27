@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db_session
-from app.core.config import AIConfigurationError
+from app.core.config import AIConfigurationError, QuotaConfigurationError, analysis_quota_enforced
 from app.db.models import AppUser
 from app.domain.access import PAID_AI_ROLES
 from app.domain.schemas import AnalysisResponse, CampaignInput
@@ -26,6 +26,14 @@ async def analyze_campaign(
     user: AppUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> AnalysisResponse:
+    # This route never claims or counts an analysis. Once quotas are enforced it is retired, so it cannot bypass them.
+    try:
+        enforced = analysis_quota_enforced()
+    except QuotaConfigurationError:
+        raise HTTPException(status_code=503, detail="QUOTA_CONFIGURATION_INVALID") from None
+    if enforced:
+        raise HTTPException(status_code=410, detail="ENDPOINT_RETIRED")
+
     # Authorization runs before any provider call, so refused requests never cost tokens.
     try:
         await require_role(session, organization_id=organization_id, user_id=user.id, allowed=PAID_AI_ROLES)
