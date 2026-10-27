@@ -312,3 +312,70 @@ class AnalysisPageRead(BaseModel):
     limit: int
     offset: int
     has_more: bool
+
+
+# --- monthly usage report (owner only) ----------------------------------------------------------------------------
+# Every count is an exact integer. A total that cannot be known is null, never zero: see domain/usage_report.py.
+
+
+class UsageAnalysesRead(BaseModel):
+    """Analyses requested in the month, by the month of their creation. Not provider calls."""
+
+    requested: int
+    succeeded: int
+    failed: int
+    running: int
+    without_quota_record: int = Field(description="Analyses created before quotas existed: never counted in units.")
+
+
+class UsageQuotaRead(BaseModel):
+    configured: bool
+    plan: str | None
+    monthly_analysis_limit: int | None
+    enforcement_enabled: bool
+    analyses_counted: int = Field(description="Analyses whose quota month is this one.")
+    units_consumed: int = Field(description="Units in force for this month.")
+    units_released: int = Field(description="Units given back: failed or abandoned analyses with no provider call.")
+    reconciled: bool = Field(description="units_consumed + units_released equals analyses_counted.")
+    remaining_available: bool = Field(description="True only when a limit exists and enforcement is on.")
+    remaining: int | None = Field(description="Units left. Null unless remaining_available.")
+
+
+class UsageTokensRead(BaseModel):
+    prompt_total: int | None = Field(description="Sum of reported input tokens. Null when none was reported.")
+    completion_total: int | None = Field(description="Sum of reported output tokens. Null when none was reported.")
+    calls_with_prompt_reported: int
+    calls_with_completion_reported: int
+
+
+class UsageCostRead(BaseModel):
+    unit: str = Field(default="openrouter_credits", description="Unit as OpenRouter reports it. Never converted.")
+    known_total: ExactDecimal | None = Field(description="Exact sum of the costs reported. Null when none was reported.")
+    calls_with_cost: int
+    calls_without_cost: int = Field(description="Calls whose cost is unknown. Not counted in known_total.")
+    explicit_zero_cost_calls: int
+    completeness: str = Field(description="no_calls | none | partial | complete")
+
+
+class UsageCallsRead(BaseModel):
+    """Provider HTTP calls. One row per call; a fallback or a format retry is another call."""
+
+    total: int
+    succeeded: int
+    failed: int
+    reserved: int
+    unknown: int
+    tokens: UsageTokensRead
+    cost: UsageCostRead
+
+
+class UsageReportRead(BaseModel):
+    organization_id: uuid.UUID
+    period: str
+    period_start: date
+    period_end_exclusive: date
+    timezone: str = "UTC"
+    has_activity: bool
+    analyses: UsageAnalysesRead
+    provider_calls: UsageCallsRead
+    quota: UsageQuotaRead
