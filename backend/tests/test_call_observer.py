@@ -27,7 +27,7 @@ class Recorder:
         self.events.append(("started", self.step, model_role, model))
         return len(self.events)
 
-    async def finished(self, token, *, error_code, http_status):  # type: ignore[no-untyped-def]
+    async def finished(self, token, *, error_code, http_status, usage=None):  # type: ignore[no-untyped-def]
         self.events.append(("finished", error_code, http_status))
 
 

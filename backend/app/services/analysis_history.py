@@ -27,6 +27,7 @@ from app.db import analysis_ledger as ledger
 from app.db.models import Analysis, AnalysisUsage, Campaign, CampaignMetricEntry
 from app.db.repositories import AnalysisRepository, CampaignMetricRepository, CampaignRepository
 from app.db.session import Database
+from app.domain.usage import ProviderUsage
 from app.domain.metrics import analyze_metrics
 from app.domain.quota import quota_period_for
 from app.domain.schemas import AnalysisCreate, CampaignInput
@@ -142,12 +143,16 @@ class _StepObserver:
         )
         return (attempt_id, model_role, model)
 
-    async def finished(self, token: object, *, error_code: str | None, http_status: int | None) -> None:
+    async def finished(
+        self, token: object, *, error_code: str | None, http_status: int | None, usage: ProviderUsage | None = None,
+    ) -> None:
         recorder = self._recorder
         attempt_id, model_role, model = token  # type: ignore[misc]
+        # The usage belongs to this call only: each HTTP call has its own attempt row and its own usage.
         if error_code is None:
             await ledger.complete_attempt(
-                recorder.database, organization_id=recorder.organization_id, attempt_id=attempt_id, status="succeeded"
+                recorder.database, organization_id=recorder.organization_id, attempt_id=attempt_id,
+                status="succeeded", usage=usage,
             )
             recorder.successes.append((model, model_role))
             recorder.last_error = None
@@ -159,6 +164,7 @@ class _StepObserver:
             status="failed",
             error_code=error_code,
             http_status=http_status,
+            usage=usage,
         )
         recorder.last_error = error_code
 
@@ -190,7 +196,9 @@ async def _close_as(
         await ledger.finalize_analysis(
             database, organization_id=organization_id, analysis_id=analysis_id, status="failed", error_code=error_code
         )
-    except DBAPIError:
+    except DBAPIError as exc:
+        # The database's own message names the rule that refused the write. It never carries a credential.
+        logger.warning("analysis finalize refused (%s); abandonment follows", str(exc.orig)[:300])
         closed = await ledger.abandon_expired(database, organization_id=organization_id, analysis_id=analysis_id)
         if not closed:
             logger.error("analysis could not be closed; it stays running until its lease expires")

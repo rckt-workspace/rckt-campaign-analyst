@@ -16,9 +16,10 @@ Guarantees and limits are documented in docs/PHASE2_ANALYSES.md, section 4, and 
 
 import uuid
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import func, select, update
+from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +27,7 @@ from app.db.models import Analysis, AnalysisQuota, AnalysisQuotaUsage, AnalysisU
 from app.db.session import Database
 from app.domain.analysis import ABANDONED
 from app.domain.quota import QuotaExceededError, QuotaNotConfiguredError
+from app.domain.usage import ProviderUsage  # re-exported: callers import it from here too
 
 
 @dataclass(frozen=True)
@@ -44,15 +46,6 @@ class ClaimResult:
     model_used: str | None
     used_fallback: bool
     format_valid: bool | None
-
-
-@dataclass(frozen=True)
-class ProviderUsage:
-    """Usage the provider actually reported for one call. Absent fields stay NULL; nothing is estimated."""
-
-    prompt_tokens: int | None = None
-    completion_tokens: int | None = None
-    cost_micros: int | None = None
 
 
 async def claim_analysis(
@@ -173,6 +166,18 @@ async def _consume_unit(session: AsyncSession, *, organization_id: uuid.UUID, pe
         raise QuotaExceededError
 
 
+def _completion_time(created_at: datetime) -> ColumnElement[datetime]:
+    """now(), but never before created_at.
+
+    now() is transaction_timestamp(): the start of the current transaction. The system clock of the host can step
+    backwards (measured: about 0.5 s, identically for now(), statement_timestamp() and clock_timestamp()). A row created
+    in one transaction and completed in a later one could then carry completed_at < created_at, which the database
+    CHECK refuses. GREATEST keeps the invariant without relying on the clock being monotonic. See
+    docs/PHASE2_PROVIDER_USAGE.md, section 8.
+    """
+    return func.greatest(func.now(), created_at)
+
+
 async def _release_unit_if_uncalled(
     session: AsyncSession, *, organization_id: uuid.UUID, analysis_id: uuid.UUID, period: date | None
 ) -> None:
@@ -252,11 +257,13 @@ async def complete_attempt(
         attempt.status = status
         attempt.error_code = error_code
         attempt.http_status = http_status
-        attempt.completed_at = func.now()
-        if usage is not None:
+        attempt.completed_at = _completion_time(attempt.created_at)
+        # Only values the provider reported are written. usage_reported means at least one of them was reported.
+        if usage is not None and usage.has_any_value:
             attempt.usage_reported = True
             attempt.prompt_tokens = usage.prompt_tokens
             attempt.completion_tokens = usage.completion_tokens
+            attempt.provider_cost = usage.provider_cost
             attempt.cost_micros = usage.cost_micros
         await session.flush()
 
@@ -289,7 +296,7 @@ async def finalize_analysis(
         analysis.format_valid = format_valid
         analysis.latency_ms = latency_ms
         analysis.lease_expires_at = None
-        analysis.completed_at = func.now()
+        analysis.completed_at = _completion_time(analysis.created_at)
         await session.flush()
         if status == "failed":
             await _release_unit_if_uncalled(
@@ -319,7 +326,7 @@ async def abandon_expired(database: Database, *, organization_id: uuid.UUID, ana
                 AnalysisUsage.analysis_id == analysis_id,
                 AnalysisUsage.status == "reserved",
             )
-            .values(status="unknown", error_code=ABANDONED, completed_at=func.now())
+            .values(status="unknown", error_code=ABANDONED, completed_at=func.greatest(func.now(), AnalysisUsage.created_at))
         )
         result = await session.execute(
             update(Analysis)
@@ -332,7 +339,7 @@ async def abandon_expired(database: Database, *, organization_id: uuid.UUID, ana
             .values(
                 status="failed",
                 error_code=ABANDONED,
-                completed_at=func.now(),
+                completed_at=func.greatest(func.now(), Analysis.created_at),
                 lease_expires_at=None,
                 used_fallback=False,
             )
