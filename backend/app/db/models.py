@@ -404,6 +404,8 @@ class AnalysisUsage(Base):
             "usage_reported OR (prompt_tokens IS NULL AND completion_tokens IS NULL AND cost_micros IS NULL)",
             name="reported_values",
         ),
+        CheckConstraint("provider_cost IS NULL OR provider_cost >= 0", name="provider_cost_non_negative"),
+        CheckConstraint("provider_cost IS NULL OR usage_reported", name="provider_cost_reported"),
         CheckConstraint(
             "(prompt_tokens IS NULL OR prompt_tokens >= 0) AND (completion_tokens IS NULL OR completion_tokens >= 0)"
             " AND (cost_micros IS NULL OR cost_micros >= 0)",
@@ -427,5 +429,6 @@ class AnalysisUsage(Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     completion_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_micros: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    provider_cost: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
     created_at: Mapped[datetime] = _created_at()
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

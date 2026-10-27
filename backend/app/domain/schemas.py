@@ -94,6 +94,8 @@ def _as_json_number(value: Decimal) -> float:
 
 
 JsonDecimal = Annotated[Decimal, PlainSerializer(_as_json_number, return_type=float, when_used="json")]
+# Money is never sent as a float: the exact decimal text travels, so the client reads what the provider reported.
+ExactDecimal = Annotated[Decimal, PlainSerializer(lambda value: format(value, "f"), return_type=str, when_used="json")]
 Amount = Annotated[JsonDecimal, Field(ge=0, max_digits=14, decimal_places=2)]  # numeric(14,2)
 UnitCost = Annotated[JsonDecimal, Field(ge=0, max_digits=14, decimal_places=4)]  # numeric(14,4)
 Ratio = Annotated[JsonDecimal, Field(ge=0, max_digits=12, decimal_places=4)]  # numeric(12,4)
@@ -254,7 +256,7 @@ class AnalysisCreate(BaseModel):
 
 
 class AnalysisAttemptRead(BaseModel):
-    """One HTTP call to the provider, in order. Tokens and cost are null unless the provider reported them."""
+    """One HTTP call to the provider, in order. Operational fields only: every role that reads a report gets these."""
 
     attempt_number: int
     step: str
@@ -263,12 +265,18 @@ class AnalysisAttemptRead(BaseModel):
     status: str
     error_code: str | None
     http_status: int | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class AnalysisAttemptUsageRead(AnalysisAttemptRead):
+    """Owner only: what the provider reported for this call. Null means not reported, never zero."""
+
     usage_reported: bool
     prompt_tokens: int | None
     completion_tokens: int | None
     cost_micros: int | None
-    created_at: datetime
-    completed_at: datetime | None
+    provider_cost: ExactDecimal | None
 
 
 class AnalysisSummaryRead(BaseModel):
@@ -291,6 +299,12 @@ class AnalysisDetailRead(AnalysisSummaryRead):
     analysis_markdown: str | None
     deterministic_report: dict
     attempts: list[AnalysisAttemptRead]
+
+
+class AnalysisDetailUsageRead(AnalysisDetailRead):
+    """Owner only. Same report, with the consumption of each call."""
+
+    attempts: list[AnalysisAttemptUsageRead]
 
 
 class AnalysisPageRead(BaseModel):

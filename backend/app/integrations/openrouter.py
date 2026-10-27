@@ -1,22 +1,36 @@
-"""OpenRouter chat-completions transport with one configurable model fallback."""
+"""OpenRouter chat-completions transport with one configurable model fallback.
+
+Usage: a non-streaming response carries a "usage" object with prompt_tokens, completion_tokens, total_tokens and an
+optional cost (see docs/PHASE2_PROVIDER_USAGE.md). Each HTTP call returns its own usage; nothing is inferred from
+the text, and no extra request is made to read costs.
+"""
 
 import asyncio
+import json
 import logging
 import re
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Protocol
 
 import httpx
 
 from app.core.config import AISettings, get_ai_settings
+from app.domain.usage import MAX_PROVIDER_COST, MAX_TOKEN_COUNT, ProviderUsage
 
 logger = logging.getLogger(__name__)
 
 RECOVERABLE = {408, 409, 425, 429, 500, 502, 503, 504, 520, 522, 524}
+PROVIDER_COST_SCALE = Decimal("0.00000001")  # NUMERIC(18, 8): exact amounts are rounded half-up to 8 decimals
 
 
 class AIProviderError(Exception):
-    """Safe upstream error identifier; never includes provider bodies or secrets."""
+    """Safe upstream error identifier; never includes provider bodies or secrets.
+
+    usage is set only when the provider answered and its usage was read, for example an empty answer that was charged.
+    """
+
+    usage: ProviderUsage | None = None
 
 
 class RecoverableAIProviderError(AIProviderError):
@@ -28,12 +42,69 @@ class ChatResult:
     text: str
     model: str
     used_fallback: bool
+    usage: ProviderUsage | None = None
 
 
-async def call_model(
+@dataclass(frozen=True)
+class ModelAnswer:
+    """The text of one call and the usage the provider reported for it. usage is None when it was absent or invalid."""
+
+    text: str
+    usage: ProviderUsage | None
+
+
+def _token_count(value: object) -> int | None:
+    # bool is an int subclass in Python, and a JSON 12.0 is not a count: both are invalid.
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= MAX_TOKEN_COUNT else None
+
+
+def _provider_cost(value: object) -> Decimal | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        value = Decimal(value)
+    if not isinstance(value, Decimal) or not value.is_finite():
+        return None
+    if value < 0 or value > MAX_PROVIDER_COST:
+        return None
+    return value.quantize(PROVIDER_COST_SCALE, rounding="ROUND_HALF_UP")
+
+
+def parse_usage(raw: object) -> ProviderUsage | None:
+    """Reads the usage object of one response. Absent or unusable fields stay None; zero is kept when reported.
+
+    Returns None when no field is usable, so the attempt is recorded as "usage not reported". Malformed fields are
+    logged by name only, never with their values.
+    """
+    if not isinstance(raw, dict):
+        return None
+    checked = (
+        ("prompt_tokens", raw.get("prompt_tokens"), _token_count),
+        ("completion_tokens", raw.get("completion_tokens"), _token_count),
+        ("cost", raw.get("cost"), _provider_cost),
+    )
+    parsed: dict[str, Any] = {}
+    malformed = []
+    for name, value, reader in checked:
+        parsed[name] = reader(value)
+        if value is not None and parsed[name] is None:
+            malformed.append(name)
+    if malformed:
+        logger.warning("provider usage has invalid fields: %s", ", ".join(malformed))
+    usage = ProviderUsage(
+        prompt_tokens=parsed["prompt_tokens"],
+        completion_tokens=parsed["completion_tokens"],
+        provider_cost=parsed["cost"],
+    )
+    return usage if usage.has_any_value else None
+
+
+async def call_model_with_usage(
     settings: AISettings, model: str, messages: list[dict[str, str]],
     transport: httpx.AsyncBaseTransport | None = None,
-) -> str:
+) -> ModelAnswer:
     try:
         # httpx applies its timeout to each phase (connect, write, pool, read) separately. This deadline bounds
         # the whole call, so four calls can never exceed four times CHAT_TIMEOUT_MS plus overhead.
@@ -80,8 +151,14 @@ async def call_model(
         error_class = RecoverableAIProviderError if response.status_code in RECOVERABLE or invalid_model else AIProviderError
         raise error_class(f"AI_{response.status_code}")
 
+    # Decimal for floats: the cost is kept exactly as the provider wrote it, never rounded through a binary float.
     try:
-        payload: Any = response.json()
+        payload: Any = json.loads(response.text, parse_float=Decimal)
+    except ValueError as exc:
+        logger.warning("LLM response is not JSON for model %s", model)
+        raise RecoverableAIProviderError("AI_EMPTY") from exc
+    usage = parse_usage(payload.get("usage")) if isinstance(payload, dict) else None
+    try:
         choice = payload["choices"][0]
         text = choice["message"]["content"]
         if not isinstance(text, str) or not text.strip():
@@ -89,10 +166,20 @@ async def call_model(
         if choice.get("finish_reason") == "length":
             # The report was cut at CHAT_MAX_TOKENS; the answer is still returned so the format guard can decide.
             logger.warning("LLM response truncated by max_tokens for model %s", model)
-        return text.strip()
-    except (ValueError, TypeError, KeyError, IndexError) as exc:
+        return ModelAnswer(text.strip(), usage)
+    except (ValueError, TypeError, KeyError, IndexError, AttributeError) as exc:
         logger.warning("LLM empty or invalid response for model %s", model)
-        raise RecoverableAIProviderError("AI_EMPTY") from exc
+        error = RecoverableAIProviderError("AI_EMPTY")
+        error.usage = usage  # the provider answered, so this call may have been charged
+        raise error from exc
+
+
+async def call_model(
+    settings: AISettings, model: str, messages: list[dict[str, str]],
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> str:
+    """The text only. Kept for callers that do not record usage."""
+    return (await call_model_with_usage(settings, model, messages, transport=transport)).text
 
 
 class CallObserver(Protocol):
@@ -101,8 +188,10 @@ class CallObserver(Protocol):
     async def started(self, model_role: str, model: str) -> object:
         """Called before the request is sent. Returns a token passed back to finished()."""
 
-    async def finished(self, token: object, *, error_code: str | None, http_status: int | None) -> None:
-        """Called once with the outcome. error_code is None on success; http_status is None when unknown."""
+    async def finished(
+        self, token: object, *, error_code: str | None, http_status: int | None, usage: ProviderUsage | None = None,
+    ) -> None:
+        """Called once with the outcome. error_code is None on success; usage is None when not reported."""
 
 
 SAFE_PROVIDER_CODES = ("AI_TIMEOUT", "AI_NETWORK", "AI_EMPTY")
@@ -129,21 +218,21 @@ async def _observed_call(
     model: str,
     messages: list[dict[str, str]],
     transport: httpx.AsyncBaseTransport | None,
-) -> str:
+) -> ModelAnswer:
     if observer is None:
-        return await call_model(settings, model, messages, transport=transport)
+        return await call_model_with_usage(settings, model, messages, transport=transport)
     token = await observer.started(model_role, model)
     try:
-        answer = await call_model(settings, model, messages, transport=transport)
+        answer = await call_model_with_usage(settings, model, messages, transport=transport)
     except AIProviderError as exc:
         code, status = classify_provider_error(str(exc))
-        await observer.finished(token, error_code=code, http_status=status)
+        await observer.finished(token, error_code=code, http_status=status, usage=exc.usage)
         raise
     except Exception:
         # Unexpected failure: the call is still recorded, so no reserved row is left behind. The error is re-raised.
-        await observer.finished(token, error_code="INTERNAL_ERROR", http_status=None)
+        await observer.finished(token, error_code="INTERNAL_ERROR", http_status=None, usage=None)
         raise
-    await observer.finished(token, error_code=None, http_status=None)
+    await observer.finished(token, error_code=None, http_status=None, usage=answer.usage)
     return answer
 
 
@@ -157,7 +246,7 @@ async def run_chat_completion(
         answer = await _observed_call(
             observer, "primary", settings, settings.primary_model, messages, transport
         )
-        return ChatResult(answer, settings.primary_model, False)
+        return ChatResult(answer.text, settings.primary_model, False, answer.usage)
     except RecoverableAIProviderError:
         if not settings.use_fallback or settings.primary_model == settings.fallback_model:
             raise
@@ -165,4 +254,4 @@ async def run_chat_completion(
         answer = await _observed_call(
             observer, "fallback", settings, settings.fallback_model, messages, transport
         )
-        return ChatResult(answer, settings.fallback_model, True)
+        return ChatResult(answer.text, settings.fallback_model, True, answer.usage)

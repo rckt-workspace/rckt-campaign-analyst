@@ -61,7 +61,7 @@ def test_fallback_disabled_does_not_call_second_model(monkeypatch, provider_env)
         raise RecoverableAIProviderError("AI_503")
 
     monkeypatch.setenv("CHAT_USE_FALLBACK", "false")
-    monkeypatch.setattr(openrouter, "call_model", failing)
+    monkeypatch.setattr(openrouter, "call_model_with_usage", failing)
     with pytest.raises(RecoverableAIProviderError):
         run(openrouter.run_chat_completion([{"role": "user", "content": "x"}]))
     assert calls == ["primary-test"]

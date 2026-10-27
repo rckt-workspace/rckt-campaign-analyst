@@ -16,12 +16,14 @@ from app.db.models import AppUser
 from app.db.repositories import UserRepository
 from app.db.session import Database
 from app.core.config import QuotaConfigurationError, analysis_quota_enforced
-from app.domain.access import PAID_AI_ROLES, VIEW_ROLES
+from app.domain.access import PAID_AI_ROLES, VIEW_ROLES, Role
 from app.domain.quota import QuotaExceededError, QuotaNotConfiguredError
 from app.domain.schemas import (
     AnalysisAttemptRead,
+    AnalysisAttemptUsageRead,
     AnalysisCreate,
     AnalysisDetailRead,
+    AnalysisDetailUsageRead,
     AnalysisPageRead,
     AnalysisSummaryRead,
 )
@@ -39,6 +41,13 @@ from app.services.campaigns import CampaignNotFoundError
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/organizations/{organization_id}/analyses", tags=["analyses"])
 
+# Documentation only: the response is serialized by _detail(), which picks one of these two models per caller.
+# response_model stays None so FastAPI never re-validates the report and cannot widen or narrow what a role receives.
+DETAIL_RESPONSE_DOCS = {
+    "model": AnalysisDetailRead | AnalysisDetailUsageRead,
+    "description": "Report. The owner receives AnalysisDetailUsageRead (consumption per call); other roles receive AnalysisDetailRead.",
+}
+
 IDEMPOTENCY_KEY_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
 DEFAULT_PAGE_SIZE = 20
 MAX_PAGE_SIZE = 100
@@ -53,27 +62,40 @@ async def _resolve_user(database: Database, identity: VerifiedIdentity) -> uuid.
         return user.id
 
 
-async def _authorize(database: Database, *, organization_id: uuid.UUID, user_id: uuid.UUID, allowed) -> None:  # type: ignore[no-untyped-def]
+async def _authorize(database: Database, *, organization_id: uuid.UUID, user_id: uuid.UUID, allowed) -> Role:  # type: ignore[no-untyped-def]
     async with database.session() as session:
         try:
-            await require_role(session, organization_id=organization_id, user_id=user_id, allowed=allowed)
+            membership = await require_role(session, organization_id=organization_id, user_id=user_id, allowed=allowed)
         except OrganizationNotFoundError:
             raise HTTPException(status_code=404, detail="NOT_FOUND") from None
         except PermissionDeniedError:
             raise HTTPException(status_code=403, detail="FORBIDDEN") from None
+    return Role(membership.role)
 
 
-def _detail(analysis, attempts) -> AnalysisDetailRead:  # type: ignore[no-untyped-def]
-    summary = analysis_history.summary_of(analysis)
-    return AnalysisDetailRead(
-        **summary,
+def _detail(analysis, attempts, *, with_usage: bool) -> dict:  # type: ignore[no-untyped-def]
+    """The report as JSON. Only the owner receives consumption: other roles get the operational fields, and the
+    consumption keys are absent. Absent is not zero and not null: the response says nothing about it.
+    """
+    fields = dict(
+        **analysis_history.summary_of(analysis),
         analysis_markdown=analysis.analysis_markdown,
         deterministic_report=analysis.deterministic_report,
-        attempts=[AnalysisAttemptRead.model_validate(attempt, from_attributes=True) for attempt in attempts],
     )
+    if with_usage:
+        detail = AnalysisDetailUsageRead(
+            **fields,
+            attempts=[AnalysisAttemptUsageRead.model_validate(attempt, from_attributes=True) for attempt in attempts],
+        )
+    else:
+        detail = AnalysisDetailRead(
+            **fields,
+            attempts=[AnalysisAttemptRead.model_validate(attempt, from_attributes=True) for attempt in attempts],
+        )
+    return detail.model_dump(mode="json")
 
 
-@router.post("", response_model=AnalysisDetailRead)
+@router.post("", response_model=None, responses={200: DETAIL_RESPONSE_DOCS, 201: DETAIL_RESPONSE_DOCS})
 async def create_analysis(
     organization_id: uuid.UUID,
     payload: AnalysisCreate,
@@ -81,7 +103,7 @@ async def create_analysis(
     identity: VerifiedIdentity = Depends(get_verified_identity),
     database: Database = Depends(get_database),
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
-) -> AnalysisDetailRead:
+) -> dict:
     if idempotency_key is None:
         raise HTTPException(status_code=400, detail="IDEMPOTENCY_KEY_REQUIRED")
     if not IDEMPOTENCY_KEY_PATTERN.match(idempotency_key):
@@ -92,7 +114,7 @@ async def create_analysis(
         raise HTTPException(status_code=503, detail="QUOTA_CONFIGURATION_INVALID") from None
 
     user_id = await _resolve_user(database, identity)
-    await _authorize(database, organization_id=organization_id, user_id=user_id, allowed=PAID_AI_ROLES)
+    role = await _authorize(database, organization_id=organization_id, user_id=user_id, allowed=PAID_AI_ROLES)
     try:
         result = await analysis_history.create_analysis(
             database,
@@ -130,7 +152,7 @@ async def create_analysis(
         response.headers["Idempotent-Replayed"] = "true"
     else:
         response.status_code = 201
-    return _detail(analysis, attempts)
+    return _detail(analysis, attempts, with_usage=role is Role.OWNER)
 
 
 @router.get("", response_model=AnalysisPageRead)
@@ -156,16 +178,16 @@ async def list_analyses(
     )
 
 
-@router.get("/{analysis_id}", response_model=AnalysisDetailRead)
+@router.get("/{analysis_id}", response_model=None, responses={200: DETAIL_RESPONSE_DOCS})
 async def get_analysis(
     organization_id: uuid.UUID,
     analysis_id: uuid.UUID,
     user: AppUser = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
     database: Database = Depends(get_database),
-) -> AnalysisDetailRead:
+) -> dict:
     try:
-        await require_role(session, organization_id=organization_id, user_id=user.id, allowed=VIEW_ROLES)
+        membership = await require_role(session, organization_id=organization_id, user_id=user.id, allowed=VIEW_ROLES)
     except OrganizationNotFoundError:
         raise HTTPException(status_code=404, detail="NOT_FOUND") from None
     except PermissionDeniedError:
@@ -174,4 +196,4 @@ async def get_analysis(
     if found is None:
         raise HTTPException(status_code=404, detail="NOT_FOUND")
     analysis, attempts = found
-    return _detail(analysis, attempts)
+    return _detail(analysis, attempts, with_usage=Role(membership.role) is Role.OWNER)
