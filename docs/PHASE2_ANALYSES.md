@@ -173,7 +173,7 @@ La clave admite de 8 a 128 caracteres: letras, cifras, `.`, `_`, `:` y `-`.
 
 - `run_chat_completion` acepta un observador opcional. Sin él, la llamada es idéntica a la anterior.
 - `request_campaign_analysis` acepta un registrador opcional por paso (`initial`, `format_retry`).
-- El endpoint anterior `POST /campaigns/analyze` se mantiene sin cambios de contrato y sin persistencia.
+- El endpoint anterior `POST /campaigns/analyze` estuvo disponible durante la transición y fue retirado en la fase 2.6A: responde 410 `ENDPOINT_RETIRED`.
 - El frontend usa ahora el endpoint persistente. Su fallback de un intento sin formato sigue siendo el mismo.
 
 ### Interfaz

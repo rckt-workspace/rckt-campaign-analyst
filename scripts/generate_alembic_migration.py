@@ -1,15 +1,25 @@
-"""Regenerates the STATEMENTS block of backend/migrations/versions/20261025_0004_analyses.py from the SQL migration.
+"""Regenerates the STATEMENTS block of an Alembic migration from its SQL migration.
 
 The SQL file is the source of truth. This script splits it into single statements (dollar-quoted function bodies and
 quoted strings are respected), drops BEGIN/COMMIT and comments, and rewrites the block between the generated markers.
-Run it from any directory: python scripts/generate_alembic_0004.py
+Usage (from any directory):
+  python scripts/generate_alembic_migration.py 0004   (default)
+  python scripts/generate_alembic_migration.py 0006
 """
 
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-SQL_PATH = REPO / "supabase" / "migrations" / "20261025000300_analyses.sql"
-ALEMBIC_PATH = REPO / "backend" / "migrations" / "versions" / "20261025_0004_analyses.py"
+import sys
+
+# Revision number -> (SQL file, Alembic file). The SQL file is the source of truth.
+MIGRATIONS = {
+    "0004": ("20261025000300_analyses.sql", "20261025_0004_analyses.py"),
+    "0006": ("20261025000500_analysis_quotas.sql", "20261025_0006_analysis_quotas.py"),
+}
+_revision = sys.argv[1] if len(sys.argv) > 1 else "0004"
+SQL_PATH = REPO / "supabase" / "migrations" / MIGRATIONS[_revision][0]
+ALEMBIC_PATH = REPO / "backend" / "migrations" / "versions" / MIGRATIONS[_revision][1]
 BEGIN_MARK = "# --- BEGIN GENERATED STATEMENTS ---"
 END_MARK = "# --- END GENERATED STATEMENTS ---"
 

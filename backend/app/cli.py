@@ -4,6 +4,7 @@ Examples (DATABASE_URL or DATABASE_MIGRATION_URL must point to the target databa
   python -m app.cli create-organization --name "Cliente Uno" --slug cliente-uno
   python -m app.cli grant-membership --organization-slug cliente-uno --email ana@cliente.com --role analyst
   python -m app.cli grant-membership --organization-slug rckt-internal --email owner@rckt.es --role owner
+  python -m app.cli set-analysis-quota --organization-slug cliente-uno --plan pilot --monthly-limit 50
 
 A user appears in app_users after their first successful sign-in. Until then, grant-membership
 cannot find them by email; the operator can also use --subject with the provider's user id.
@@ -15,13 +16,15 @@ import os
 import sys
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from app.core.config import DatabaseSettings, get_database_settings
-from app.db.models import AppUser, Organization
+from app.db.models import AnalysisQuota, AppUser, Organization
 from app.db.repositories import MembershipRepository, OrganizationRepository, UserRepository
 from app.db.session import Database
 from app.domain.access import Role
+from app.domain.quota import PLAN_VALUES
 
 
 def _database() -> Database:
@@ -78,6 +81,37 @@ async def grant_membership(organization_slug: str, role: Role, subject: str | No
         await database.dispose()
 
 
+async def set_analysis_quota(organization_slug: str, plan: str, monthly_limit: int) -> str:
+    """Creates or replaces the organization's quota. The limit is a count of analyses per UTC month, never money."""
+    database = _database()
+    try:
+        async with database.session() as session:
+            organization = await session.scalar(select(Organization).where(Organization.slug == organization_slug))
+            if organization is None:
+                raise SystemExit("organization not found")
+            await session.execute(
+                pg_insert(AnalysisQuota)
+                .values(organization_id=organization.id, plan=plan, monthly_analysis_limit=monthly_limit)
+                .on_conflict_do_update(
+                    index_elements=[AnalysisQuota.organization_id],
+                    set_={"plan": plan, "monthly_analysis_limit": monthly_limit, "updated_at": func.now()},
+                )
+            )
+            return f"quota for {organization.slug}: plan {plan}, {monthly_limit} analyses per UTC month"
+    finally:
+        await database.dispose()
+
+
+def _non_negative_int(raw: str) -> int:
+    try:
+        value = int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be a whole number") from None
+    if value < 0:
+        raise argparse.ArgumentTypeError("must be zero or more")
+    return value
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="app.cli", description="RCKT operator procedures")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -96,8 +130,15 @@ def main(argv: list[str] | None = None) -> int:
     grant.add_argument("--subject")
     grant.add_argument("--email")
 
+    quota = commands.add_parser("set-analysis-quota")
+    quota.add_argument("--organization-slug", required=True)
+    quota.add_argument("--plan", required=True, choices=PLAN_VALUES)
+    quota.add_argument("--monthly-limit", required=True, type=_non_negative_int)
+
     args = parser.parse_args(argv)
-    if args.command == "create-organization":
+    if args.command == "set-analysis-quota":
+        message = asyncio.run(set_analysis_quota(args.organization_slug, args.plan, args.monthly_limit))
+    elif args.command == "create-organization":
         message = asyncio.run(create_organization(args.name, args.slug))
     elif args.command == "provision-user":
         message = asyncio.run(provision_user(args.subject, args.email))

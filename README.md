@@ -50,7 +50,7 @@ bun install --frozen-lockfile
 bun run dev
 ```
 
-Contrato principal: POST /api/v1/campaigns/analyze, JSON normalizado desde React. Respuesta: JSON con campo analysis (markdown para ExecutiveReportPanel). El endpoint usa Pydantic, motor determinístico y proveedor OpenRouter.
+Contrato principal: POST /api/v1/organizations/{organization_id}/analyses con cabecera Idempotency-Key, JSON normalizado desde React. Respuesta: registro persistido con analysis_markdown. El endpoint anterior POST /api/v1/organizations/{organization_id}/campaigns/analyze responde 410 y está retirado. El endpoint usa Pydantic, motor determinístico y proveedor OpenRouter.
 
 ## Autenticación (Fase 2.2)
 

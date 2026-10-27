@@ -1,45 +1,15 @@
-"""Internal REST API. Reachable only through the frontend server; every route here requires a verified identity."""
+"""Legacy analysis endpoint, retired. It answers 410 and never calls the provider or touches the database.
 
-import logging
-import uuid
+Replaced by POST /api/v1/organizations/{organization_id}/analyses, which persists, is idempotent and counts quota.
+No consumer remains: the frontend moved to the persisted endpoint in Phase 2.5B (checked again in Phase 2.6A). The
+route stays, answering 410, so old clients get a clear answer instead of a 404.
+"""
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
+from fastapi import APIRouter, HTTPException
 
-from app.api.deps import get_current_user, get_db_session
-from app.core.config import AIConfigurationError
-from app.db.models import AppUser
-from app.domain.access import PAID_AI_ROLES
-from app.domain.schemas import AnalysisResponse, CampaignInput
-from app.integrations.openrouter import AIProviderError
-from app.services.access import OrganizationNotFoundError, PermissionDeniedError, require_role
-from app.services.analysis import request_campaign_analysis
-
-logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1", tags=["campaigns"])
 
 
-@router.post("/organizations/{organization_id}/campaigns/analyze", response_model=AnalysisResponse)
-async def analyze_campaign(
-    organization_id: uuid.UUID,
-    payload: CampaignInput,
-    user: AppUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
-) -> AnalysisResponse:
-    # Authorization runs before any provider call, so refused requests never cost tokens.
-    try:
-        await require_role(session, organization_id=organization_id, user_id=user.id, allowed=PAID_AI_ROLES)
-    except OrganizationNotFoundError:
-        raise HTTPException(status_code=404, detail="NOT_FOUND") from None
-    except PermissionDeniedError:
-        raise HTTPException(status_code=403, detail="FORBIDDEN") from None
-
-    try:
-        text = await request_campaign_analysis(payload)
-    except AIConfigurationError:
-        logger.error("AI server environment is incomplete")
-        raise HTTPException(status_code=503, detail="AI backend unavailable") from None
-    except AIProviderError:
-        logger.error("AI upstream failed")
-        raise HTTPException(status_code=502, detail="AI provider unavailable") from None
-    return AnalysisResponse(analysis=text)
+@router.post("/organizations/{organization_id}/campaigns/analyze")
+async def analyze_campaign_retired(organization_id: str) -> None:
+    raise HTTPException(status_code=410, detail="ENDPOINT_RETIRED")

@@ -35,6 +35,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
 from app.domain.access import ROLE_VALUES
+from app.domain.quota import PLAN_VALUES
 from app.domain.analysis import (
     ANALYSIS_STATUSES,
     ATTEMPT_STATUSES,
@@ -281,6 +282,15 @@ class Analysis(Base):
         ),
         CheckConstraint("latency_ms IS NULL OR latency_ms >= 0", name="latency_non_negative"),
         CheckConstraint("completed_at IS NULL OR completed_at >= created_at", name="completed_after_created"),
+        CheckConstraint(
+            "quota_period_start IS NULL OR extract(day from quota_period_start) = 1", name="quota_period_first_day"
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "quota_period_start"],
+            ["analysis_quota_usage.organization_id", "analysis_quota_usage.period_start"],
+            name="fk_analyses_quota_usage",
+            ondelete="RESTRICT",
+        ),
         Index("ix_analyses_organization_id_created_at", "organization_id", text("created_at DESC")),
         Index(
             "ix_analyses_organization_id_campaign_id_created_at",
@@ -310,6 +320,50 @@ class Analysis(Base):
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = _created_at()
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The UTC month the analysis was counted in. NULL for analyses created before quotas: never counted.
+    quota_period_start: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+class AnalysisQuota(Base):
+    """The quota of one organization. Without a row, no limit is configured. Written by the operator CLI."""
+
+    __tablename__ = "analysis_quotas"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id"], ["organizations.id"], name="fk_analysis_quotas_organization_id", ondelete="RESTRICT"
+        ),
+        CheckConstraint("plan IN (" + quoted_list(PLAN_VALUES) + ")", name="plan_valid"),
+        CheckConstraint("monthly_analysis_limit >= 0", name="limit_non_negative"),
+        CheckConstraint("updated_at >= created_at", name="updated_after_created"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    plan: Mapped[str] = mapped_column(String(16), nullable=False)
+    monthly_analysis_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AnalysisQuotaUsage(Base):
+    """Units of one organization in one UTC month. consumed is the units in force; released counts those given back."""
+
+    __tablename__ = "analysis_quota_usage"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id"], ["organizations.id"], name="fk_analysis_quota_usage_organization_id", ondelete="RESTRICT"
+        ),
+        CheckConstraint("extract(day from period_start) = 1", name="first_day"),
+        CheckConstraint("consumed >= 0", name="consumed_non_negative"),
+        CheckConstraint("released >= 0", name="released_non_negative"),
+    )
+
+    organization_id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    period_start: Mapped[date] = mapped_column(Date, primary_key=True)
+    consumed: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    released: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    created_at: Mapped[datetime] = _created_at()
 
 
 class AnalysisUsage(Base):

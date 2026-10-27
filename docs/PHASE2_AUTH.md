@@ -62,7 +62,7 @@ Implementada en `backend/app/security/tokens.py` con **PyJWT 2.15.1** (`pyjwt[cr
 | Organización suspendida | 403 `FORBIDDEN` |
 | Identificador de organización inválido | 422 |
 
-El análisis vive en `POST /api/v1/organizations/{organization_id}/campaigns/analyze`. La autorización se valida **antes** de cualquier llamada al proveedor, así que una solicitud denegada nunca cuesta tokens. La ruta anterior `POST /api/v1/campaigns/analyze` fue eliminada: no queda ningún camino anónimo que consuma OpenRouter.
+El análisis vive en `POST /api/v1/organizations/{organization_id}/analyses`. La autorización se valida **antes** de cualquier llamada al proveedor, así que una solicitud denegada nunca cuesta tokens. La ruta anterior `POST /api/v1/campaigns/analyze` fue eliminada, y la de organización `…/campaigns/analyze` está retirada desde la fase 2.6A (410 `ENDPOINT_RETIRED`): no queda ningún camino que consuma OpenRouter sin contar.
 
 `GET /api/v1/me` devuelve solo `user.id`, `user.email` y las organizaciones del usuario con su rol. El `sub` del proveedor y otros campos internos no se exponen.
 

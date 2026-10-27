@@ -1,27 +1,31 @@
 """Write protocol for analyses. Each function is one short transaction, and none stays open during a provider call.
 
 Order for one request:
-1. claim_analysis: commits the 'running' row (deterministic report, input hash, lease) before any provider call.
+1. claim_analysis: commits the 'running' row (deterministic report, input hash, lease) and consumes one quota unit in
+   the same transaction, before any provider call.
 2. For each HTTP call: reserve_attempt commits, then the provider is called with no transaction open, then
    complete_attempt commits the outcome.
-3. finalize_analysis commits the final state.
+3. finalize_analysis commits the final state, and gives the unit back when no call was ever reserved.
 
 A lease that expired is never resumed with a new call: abandon_expired marks the reserved attempts 'unknown' and the
 analysis 'failed' with ANALYSIS_ABANDONED. The database enforces the rules (triggers in migration 0004); these
 functions only sequence the writes and report what the database accepted or refused.
 
-Guarantees and limits are documented in docs/PHASE2_ANALYSES.md, section 4.
+Guarantees and limits are documented in docs/PHASE2_ANALYSES.md, section 4, and the quota rules in docs/PHASE2_QUOTAS.md.
 """
 
 import uuid
 from dataclasses import dataclass
+from datetime import date
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Analysis, AnalysisUsage
+from app.db.models import Analysis, AnalysisQuota, AnalysisQuotaUsage, AnalysisUsage
 from app.db.session import Database
 from app.domain.analysis import ABANDONED
+from app.domain.quota import QuotaExceededError, QuotaNotConfiguredError
 
 
 @dataclass(frozen=True)
@@ -64,9 +68,23 @@ async def claim_analysis(
     model_requested: str,
     deterministic_report: dict,
     lease_seconds: int,
+    quota_period: date | None = None,
+    enforce_quota: bool = False,
 ) -> ClaimResult:
-    """Inserts the running analysis, or finds the one that owns the key. Concurrent claims: exactly one inserts."""
+    """Inserts the running analysis, or finds the one that owns the key. Concurrent claims: exactly one inserts.
+
+    With quota_period, a new claim also consumes one unit of that UTC month in the same transaction. When the quota
+    refuses (QuotaExceededError, QuotaNotConfiguredError), the transaction rolls back: no analysis, no unit.
+    A replay with an existing key consumes nothing. Without quota_period, the analysis is not counted.
+    """
     async with database.session() as session:
+        if quota_period is not None:
+            # The month row must exist before the analysis references it. Harmless if the claim later loses the race.
+            await session.execute(
+                pg_insert(AnalysisQuotaUsage)
+                .values(organization_id=organization_id, period_start=quota_period)
+                .on_conflict_do_nothing()
+            )
         claimed_id = (
             await session.execute(
                 pg_insert(Analysis)
@@ -83,12 +101,17 @@ async def claim_analysis(
                     status="running",
                     used_fallback=False,
                     lease_expires_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, float(lease_seconds)),
+                    quota_period_start=quota_period,
                 )
                 .on_conflict_do_nothing(constraint="uq_analyses_organization_id_idempotency_key")
                 .returning(Analysis.id)
             )
         ).scalar_one_or_none()
         if claimed_id is not None:
+            if quota_period is not None:
+                await _consume_unit(
+                    session, organization_id=organization_id, period=quota_period, enforce=enforce_quota
+                )
             return ClaimResult("claimed", claimed_id, "running", None, None, None, False, None)
 
         analysis, expired = (
@@ -115,6 +138,73 @@ async def claim_analysis(
             analysis.used_fallback,
             analysis.format_valid,
         )
+
+
+async def _consume_unit(session: AsyncSession, *, organization_id: uuid.UUID, period: date, enforce: bool) -> None:
+    """Takes one unit of the month, inside the claim's transaction.
+
+    Enforced: one conditional UPDATE joined to the quota. It is the only statement that can take the last unit, and
+    concurrent claims serialize on the usage row, so two claims never both pass with one unit left.
+    Not enforced: counted unconditionally, so the history exists before a limit is switched on.
+    """
+    if not enforce:
+        await session.execute(
+            update(AnalysisQuotaUsage)
+            .where(AnalysisQuotaUsage.organization_id == organization_id, AnalysisQuotaUsage.period_start == period)
+            .values(consumed=AnalysisQuotaUsage.consumed + 1)
+        )
+        return
+    configured = await session.scalar(
+        select(AnalysisQuota.organization_id).where(AnalysisQuota.organization_id == organization_id)
+    )
+    if configured is None:
+        raise QuotaNotConfiguredError
+    result = await session.execute(
+        update(AnalysisQuotaUsage)
+        .where(
+            AnalysisQuotaUsage.organization_id == organization_id,
+            AnalysisQuotaUsage.period_start == period,
+            AnalysisQuota.organization_id == organization_id,
+            AnalysisQuotaUsage.consumed < AnalysisQuota.monthly_analysis_limit,
+        )
+        .values(consumed=AnalysisQuotaUsage.consumed + 1)
+    )
+    if result.rowcount != 1:
+        raise QuotaExceededError
+
+
+async def _release_unit_if_uncalled(
+    session: AsyncSession, *, organization_id: uuid.UUID, analysis_id: uuid.UUID, period: date | None
+) -> None:
+    """Gives the unit back only when no provider call was ever reserved. Runs in the closing transaction.
+
+    The caller holds the analysis row lock, so no call can be reserved between the count and the release.
+    """
+    if period is None:
+        return
+    calls = await session.scalar(
+        select(func.count())
+        .select_from(AnalysisUsage)
+        .where(AnalysisUsage.organization_id == organization_id, AnalysisUsage.analysis_id == analysis_id)
+    )
+    if calls:
+        return
+    await session.execute(
+        update(AnalysisQuotaUsage)
+        .where(AnalysisQuotaUsage.organization_id == organization_id, AnalysisQuotaUsage.period_start == period)
+        .values(consumed=AnalysisQuotaUsage.consumed - 1, released=AnalysisQuotaUsage.released + 1)
+    )
+
+
+async def _locked_analysis(session: AsyncSession, *, organization_id: uuid.UUID, analysis_id: uuid.UUID) -> Analysis:
+    analysis = await session.scalar(
+        select(Analysis)
+        .where(Analysis.organization_id == organization_id, Analysis.id == analysis_id)
+        .with_for_update()
+    )
+    if analysis is None:
+        raise LookupError("analysis not found in this organization")
+    return analysis
 
 
 async def reserve_attempt(
@@ -184,11 +274,13 @@ async def finalize_analysis(
     format_valid: bool | None = None,
     latency_ms: int | None = None,
 ) -> None:
-    """Moves a running analysis to 'succeeded' or 'failed'. Refused unless the lease is live and no attempt is reserved."""
+    """Moves a running analysis to 'succeeded' or 'failed'. Refused unless the lease is live and no attempt is reserved.
+
+    A 'failed' analysis that never reserved a call gives its quota unit back, in the same transaction.
+    """
     async with database.session() as session:
-        analysis = await session.get(Analysis, analysis_id)
-        if analysis is None or analysis.organization_id != organization_id:
-            raise LookupError("analysis not found in this organization")
+        analysis = await _locked_analysis(session, organization_id=organization_id, analysis_id=analysis_id)
+        period = analysis.quota_period_start
         analysis.status = status
         analysis.error_code = error_code
         analysis.analysis_markdown = analysis_markdown
@@ -199,14 +291,27 @@ async def finalize_analysis(
         analysis.lease_expires_at = None
         analysis.completed_at = func.now()
         await session.flush()
+        if status == "failed":
+            await _release_unit_if_uncalled(
+                session, organization_id=organization_id, analysis_id=analysis_id, period=period
+            )
 
 
 async def abandon_expired(database: Database, *, organization_id: uuid.UUID, analysis_id: uuid.UUID) -> bool:
     """Closes a running analysis whose lease expired. Its reserved calls become 'unknown'. Never makes a provider call.
 
-    Both updates share one transaction. The database refuses either one while the lease is still live.
+    All writes share one transaction. The database refuses either update while the lease is still live. The unit is
+    released only if no call was ever reserved for the analysis.
     """
     async with database.session() as session:
+        analysis = await session.scalar(
+            select(Analysis)
+            .where(Analysis.organization_id == organization_id, Analysis.id == analysis_id)
+            .with_for_update()
+        )
+        if analysis is None:
+            return False
+        period = analysis.quota_period_start
         await session.execute(
             update(AnalysisUsage)
             .where(
@@ -232,4 +337,9 @@ async def abandon_expired(database: Database, *, organization_id: uuid.UUID, ana
                 used_fallback=False,
             )
         )
-        return result.rowcount == 1
+        if result.rowcount != 1:
+            return False
+        await _release_unit_if_uncalled(
+            session, organization_id=organization_id, analysis_id=analysis_id, period=period
+        )
+        return True
