@@ -45,6 +45,8 @@ const NOTICES: Partial<Record<string, string>> = {
     "Tu rol permite consultar los informes de tu organización, pero no generar análisis nuevos.",
   [ANALYSIS_ERRORS.NO_ORGANIZATION]:
     "Tu cuenta todavía no tiene acceso a ninguna organización. Solicita la asignación a tu contacto en RCKT.",
+  [ANALYSIS_ERRORS.QUOTA_EXCEEDED]:
+    "Tu organización ya usó los análisis disponibles de este mes. El contador se reinicia el día 1 (UTC); para ampliarlo, contacta a RCKT.",
 };
 
 const SAVE_NOTICES: Record<string, SaveResult> = {

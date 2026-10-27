@@ -122,6 +122,7 @@ export const analyzeCampaign = createServerFn({ method: "POST" })
         if (error.status === 401) throw new Error(ANALYSIS_ERRORS.SESSION_EXPIRED);
         if (error.status === 403) throw new Error(ANALYSIS_ERRORS.FORBIDDEN);
         if (error.status === 404) throw new Error(ANALYSIS_ERRORS.NO_ORGANIZATION);
+        if (error.status === 429) throw new Error(ANALYSIS_ERRORS.QUOTA_EXCEEDED);
       }
       console.error("Campaign analysis unavailable");
       throw new Error(ANALYSIS_ERRORS.UNAVAILABLE);
