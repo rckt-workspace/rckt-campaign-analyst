@@ -23,7 +23,9 @@ from app.core.config import DatabaseSettings, get_database_settings
 from app.db.models import AnalysisQuota, AppUser, Organization
 from app.db.repositories import MembershipRepository, OrganizationRepository, UserRepository
 from app.db.session import Database
+from app.db.audit import insert_audit_event
 from app.domain.access import Role
+from app.domain.audit import AuditDraft
 from app.domain.quota import PLAN_VALUES
 
 
@@ -75,7 +77,14 @@ async def grant_membership(organization_slug: str, role: Role, subject: str | No
             existing = await MembershipRepository(session).get_for_user(organization_id=organization.id, user_id=user.id)
             if existing is not None:
                 raise SystemExit("membership already exists; change roles with a new procedure, not by duplication")
-            await MembershipRepository(session).add(organization_id=organization.id, user_id=user.id, role=role)
+            membership = await MembershipRepository(session).add(organization_id=organization.id, user_id=user.id, role=role)
+            await insert_audit_event(session, AuditDraft(
+                organization_id=organization.id,
+                action="membership.granted",
+                resource_id=str(membership.id),
+                source="operator_cli",
+                details={"role": role.value},
+            ))
             return f"granted {role.value} to user {user.id} in {organization.slug}"
     finally:
         await database.dispose()
@@ -89,6 +98,12 @@ async def set_analysis_quota(organization_slug: str, plan: str, monthly_limit: i
             organization = await session.scalar(select(Organization).where(Organization.slug == organization_slug))
             if organization is None:
                 raise SystemExit("organization not found")
+            current = await session.scalar(
+                select(AnalysisQuota).where(AnalysisQuota.organization_id == organization.id).with_for_update()
+            )
+            if current is not None and (current.plan, current.monthly_analysis_limit) == (plan, monthly_limit):
+                # Nothing changed: no write and no event. Repeating the same procedure is not a new change.
+                return f"quota for {organization.slug} unchanged: plan {plan}, {monthly_limit} analyses per UTC month"
             await session.execute(
                 pg_insert(AnalysisQuota)
                 .values(organization_id=organization.id, plan=plan, monthly_analysis_limit=monthly_limit)
@@ -97,6 +112,19 @@ async def set_analysis_quota(organization_slug: str, plan: str, monthly_limit: i
                     set_={"plan": plan, "monthly_analysis_limit": monthly_limit, "updated_at": func.now()},
                 )
             )
+            # Same transaction as the change: if the event cannot be written, the quota is not changed either.
+            await insert_audit_event(session, AuditDraft(
+                organization_id=organization.id,
+                action="quota.updated",
+                resource_id=str(organization.id),
+                source="operator_cli",
+                details={
+                    "plan": plan,
+                    "monthly_analysis_limit": monthly_limit,
+                    "previous_plan": None if current is None else current.plan,
+                    "previous_monthly_analysis_limit": None if current is None else current.monthly_analysis_limit,
+                },
+            ))
             return f"quota for {organization.slug}: plan {plan}, {monthly_limit} analyses per UTC month"
     finally:
         await database.dispose()

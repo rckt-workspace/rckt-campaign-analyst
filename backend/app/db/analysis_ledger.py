@@ -23,9 +23,11 @@ from sqlalchemy.sql.elements import ColumnElement
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.audit import insert_audit_event
 from app.db.models import Analysis, AnalysisQuota, AnalysisQuotaUsage, AnalysisUsage
 from app.db.session import Database
 from app.domain.analysis import ABANDONED
+from app.domain.audit import AuditDraft
 from app.domain.quota import QuotaExceededError, QuotaNotConfiguredError
 from app.domain.usage import ProviderUsage  # re-exported: callers import it from here too
 
@@ -105,6 +107,15 @@ async def claim_analysis(
                 await _consume_unit(
                     session, organization_id=organization_id, period=quota_period, enforce=enforce_quota
                 )
+            # Same transaction as the claim and the unit: a refused quota leaves no analysis and no event.
+            await insert_audit_event(session, AuditDraft(
+                organization_id=organization_id,
+                action="analysis.created",
+                resource_id=str(claimed_id),
+                source="user",
+                actor_user_id=requested_by,
+                details={"quota_period": None if quota_period is None else f"{quota_period.year:04d}-{quota_period.month:02d}"},
+            ))
             return ClaimResult("claimed", claimed_id, "running", None, None, None, False, None)
 
         analysis, expired = (
@@ -302,6 +313,17 @@ async def finalize_analysis(
             await _release_unit_if_uncalled(
                 session, organization_id=organization_id, analysis_id=analysis_id, period=period
             )
+        # Written by the same transaction that changed the status: a refused write rolls back the event too.
+        if status == "succeeded":
+            await insert_audit_event(session, AuditDraft(
+                organization_id=organization_id, action="analysis.succeeded", resource_id=str(analysis_id), source="internal",
+                details={"model_used": model_used, "used_fallback": bool(used_fallback), "format_valid": bool(format_valid)},
+            ))
+        else:
+            await insert_audit_event(session, AuditDraft(
+                organization_id=organization_id, action="analysis.failed", resource_id=str(analysis_id), source="internal",
+                details={"error_code": error_code, "used_fallback": bool(used_fallback)},
+            ))
 
 
 async def abandon_expired(database: Database, *, organization_id: uuid.UUID, analysis_id: uuid.UUID) -> bool:
@@ -349,4 +371,8 @@ async def abandon_expired(database: Database, *, organization_id: uuid.UUID, ana
         await _release_unit_if_uncalled(
             session, organization_id=organization_id, analysis_id=analysis_id, period=period
         )
+        await insert_audit_event(session, AuditDraft(
+            organization_id=organization_id, action="analysis.failed", resource_id=str(analysis_id), source="internal",
+            details={"error_code": ABANDONED, "used_fallback": False},
+        ))
         return True

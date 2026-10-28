@@ -379,3 +379,23 @@ class UsageReportRead(BaseModel):
     analyses: UsageAnalysesRead
     provider_calls: UsageCallsRead
     quota: UsageQuotaRead
+
+
+# --- audit events (owner only, read-only) -------------------------------------------------------------------------
+
+class AuditEventRead(BaseModel):
+    """One audited operation. metadata holds only the keys the event type allows (domain/audit.py)."""
+
+    id: int
+    occurred_at: datetime
+    source: str
+    actor_user_id: uuid.UUID | None
+    action: str
+    resource_type: str
+    resource_id: str
+    metadata: dict[str, str | int | bool | None]
+
+
+class AuditEventPageRead(BaseModel):
+    items: list[AuditEventRead]
+    next_cursor: int | None = Field(description="Pass as cursor to read the next, older page. Null when there is none.")

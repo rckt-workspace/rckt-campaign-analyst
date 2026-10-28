@@ -17,6 +17,7 @@ MIGRATIONS = {
     "0004": ("20261025000300_analyses.sql", "20261025_0004_analyses.py"),
     "0006": ("20261025000500_analysis_quotas.sql", "20261025_0006_analysis_quotas.py"),
     "0007": ("20261027000600_provider_cost.sql", "20261027_0007_provider_cost.py"),
+    "0008": ("20261027000700_audit_events.sql", "20261027_0008_audit_events.py"),
 }
 _revision = sys.argv[1] if len(sys.argv) > 1 else "0004"
 SQL_PATH = REPO / "supabase" / "migrations" / MIGRATIONS[_revision][0]
