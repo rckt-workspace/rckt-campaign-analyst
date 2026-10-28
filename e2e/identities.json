@@ -2,13 +2,70 @@
   "_comment": "Test-only identities for the simulated Supabase Auth issuer. Passwords and subjects are fictitious and used nowhere else.",
   "password": "e2e-test-password-not-real",
   "organizations": [
-    { "name": "Cliente A", "slug": "cliente-a" },
-    { "name": "Cliente B", "slug": "cliente-b" }
+    {
+      "name": "Cliente A",
+      "slug": "cliente-a"
+    },
+    {
+      "name": "Cliente B",
+      "slug": "cliente-b"
+    }
   ],
   "users": [
-    { "key": "analyst", "subject": "00000000-0000-4000-8000-00000000a001", "email": "ana@cliente-a.test", "memberships": [{ "organization": "cliente-a", "role": "analyst" }] },
-    { "key": "viewer", "subject": "00000000-0000-4000-8000-00000000a002", "email": "viewer@cliente-a.test", "memberships": [{ "organization": "cliente-a", "role": "client_viewer" }] },
-    { "key": "outsider", "subject": "00000000-0000-4000-8000-00000000a003", "email": "outsider@test.local", "memberships": [] },
-    { "key": "expired", "subject": "00000000-0000-4000-8000-00000000a004", "email": "expired@cliente-a.test", "memberships": [{ "organization": "cliente-a", "role": "analyst" }], "accessTokenSeconds": -120 }
+    {
+      "key": "analyst",
+      "subject": "00000000-0000-4000-8000-00000000a001",
+      "email": "ana@cliente-a.test",
+      "memberships": [
+        {
+          "organization": "cliente-a",
+          "role": "analyst"
+        }
+      ]
+    },
+    {
+      "key": "owner",
+      "subject": "00000000-0000-4000-8000-00000000a005",
+      "email": "owner@cliente-a.test",
+      "memberships": [
+        {
+          "organization": "cliente-a",
+          "role": "owner"
+        },
+        {
+          "organization": "cliente-b",
+          "role": "owner"
+        }
+      ]
+    },
+    {
+      "key": "viewer",
+      "subject": "00000000-0000-4000-8000-00000000a002",
+      "email": "viewer@cliente-a.test",
+      "memberships": [
+        {
+          "organization": "cliente-a",
+          "role": "client_viewer"
+        }
+      ]
+    },
+    {
+      "key": "outsider",
+      "subject": "00000000-0000-4000-8000-00000000a003",
+      "email": "outsider@test.local",
+      "memberships": []
+    },
+    {
+      "key": "expired",
+      "subject": "00000000-0000-4000-8000-00000000a004",
+      "email": "expired@cliente-a.test",
+      "memberships": [
+        {
+          "organization": "cliente-a",
+          "role": "analyst"
+        }
+      ],
+      "accessTokenSeconds": -120
+    }
   ]
 }

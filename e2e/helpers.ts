@@ -35,7 +35,12 @@ export const FORBIDDEN_IN_BROWSER = [
 const JWT_PATTERN = /eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/;
 
 export const ANALYZE = "Analizar campaña";
-export const REPORT_SECTIONS = ["Estado general", "Resumen ejecutivo", "Principales hallazgos", "Qué haría ahora"];
+export const REPORT_SECTIONS = [
+  "Estado general",
+  "Resumen ejecutivo",
+  "Principales hallazgos",
+  "Qué haría ahora",
+];
 
 export async function setProviderMode(request: APIRequestContext, mode: "ok" | "error" | "slow") {
   const response = await request.post(`${PROVIDER}/__control`, { data: { mode } });
@@ -45,6 +50,15 @@ export async function setProviderMode(request: APIRequestContext, mode: "ok" | "
 export async function providerCalls(request: APIRequestContext): Promise<number> {
   const state = await (await request.get(`${PROVIDER}/__calls`)).json();
   return state.calls.length;
+}
+
+/** Which usage the simulated provider reports: none (default), partial (every other call) or complete. */
+export async function setProviderUsage(
+  request: APIRequestContext,
+  usage: "none" | "partial" | "complete",
+) {
+  const response = await request.post(`${PROVIDER}/__control`, { data: { usage } });
+  expect(response.ok()).toBeTruthy();
 }
 
 export async function resetServices(request: APIRequestContext) {
@@ -78,7 +92,10 @@ export function expectNoSecrets(text: string) {
   for (const marker of FORBIDDEN_IN_BROWSER) {
     expect(text, `browser-visible content must not contain ${marker}`).not.toContain(marker);
   }
-  expect(JWT_PATTERN.test(text), "no access token may appear in browser-visible content").toBeFalsy();
+  expect(
+    JWT_PATTERN.test(text),
+    "no access token may appear in browser-visible content",
+  ).toBeFalsy();
 }
 
 /** Storage visible to page scripts must not contain Supabase session material. Cookies are checked separately. */
@@ -102,4 +119,5 @@ export async function expectSessionCookiesAreHttpOnly(page: Page) {
   }
 }
 
-export const SERVER_FUNCTION_POST = (url: string) => url.includes("/_serverFn") || url.includes("/_server");
+export const SERVER_FUNCTION_POST = (url: string) =>
+  url.includes("/_serverFn") || url.includes("/_server");
