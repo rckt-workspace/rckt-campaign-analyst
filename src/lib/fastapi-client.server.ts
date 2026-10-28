@@ -10,14 +10,32 @@ export type MeResponse = {
   organizations: { id: string; slug: string; name: string; role: string }[];
 };
 
-/** Carries only the HTTP status. Provider or service details never reach the browser. */
+/**
+ * Carries the HTTP status and, when FastAPI names it, a stable error code (for example AUDIT_UNAVAILABLE). The code
+ * must match the safe shape below; the response body is never kept. Provider or service details never reach the browser.
+ */
 export class FastapiError extends Error {
   readonly status: number;
+  readonly code: string | null;
 
-  constructor(status: number) {
+  constructor(status: number, code: string | null = null) {
     super(`FASTAPI_${status}`);
     this.name = "FastapiError";
     this.status = status;
+    this.code = code;
+  }
+}
+
+const SAFE_CODE = /^[A-Z][A-Z0-9_]{2,63}$/;
+
+/** Reads only the `detail` of an error body, and only when it is a stable code. Anything else is discarded. */
+async function safeErrorCode(response: Response): Promise<string | null> {
+  try {
+    const body = (await response.json()) as { detail?: unknown } | null;
+    const detail = body?.detail;
+    return typeof detail === "string" && SAFE_CODE.test(detail) ? detail : null;
+  } catch {
+    return null;
   }
 }
 
@@ -50,8 +68,9 @@ export async function fastapiRequest<T>(
   try {
     const response = await fetch(`${fastapiBaseUrl()}${path}`, init);
     if (!response.ok) {
+      const code = await safeErrorCode(response);
       console.error("FastAPI request failed", { path, status: response.status });
-      throw new FastapiError(response.status);
+      throw new FastapiError(response.status, code);
     }
     return (await response.json()) as T;
   } finally {
