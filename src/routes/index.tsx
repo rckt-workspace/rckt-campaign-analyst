@@ -289,7 +289,11 @@ function Index() {
 
   return (
     <div className="min-h-screen bg-background">
-      <AppHeader email={account.email} onSignOut={() => void handleSignOut()} />
+      <AppHeader
+        email={account.email}
+        onSignOut={() => void handleSignOut()}
+        showAdminLink={account.organizations.some((organization) => organization.role === "owner")}
+      />
       <main className="pb-16">
         <HeroIntro />
         {notice ? (
