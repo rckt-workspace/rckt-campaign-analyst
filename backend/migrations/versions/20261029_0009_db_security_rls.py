@@ -71,6 +71,9 @@ STATEMENTS = (
     SET LOCAL ROLE rckt_schema_owner
     """,
     """
+    ALTER DEFAULT PRIVILEGES FOR ROLE rckt_schema_owner REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC
+    """,
+    """
     CREATE FUNCTION public.current_app_user_id() RETURNS uuid
         LANGUAGE sql STABLE SECURITY INVOKER SET search_path = pg_catalog, public
     AS $$
@@ -514,6 +517,7 @@ DOWNGRADE_STATEMENTS = (
     END $$
     """,
     "GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO PUBLIC",
+    "ALTER DEFAULT PRIVILEGES FOR ROLE rckt_schema_owner GRANT EXECUTE ON FUNCTIONS TO PUBLIC",
     "ALTER SCHEMA public OWNER TO pg_database_owner",
 )
 

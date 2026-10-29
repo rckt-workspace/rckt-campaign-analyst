@@ -64,6 +64,12 @@ END $$;
 
 SET LOCAL ROLE rckt_schema_owner;
 
+-- Future functions. Verified on PostgreSQL 16: a GLOBAL default (no IN SCHEMA) makes a function that rckt_schema_owner
+-- creates from now on executable by no one but its owner. The IN SCHEMA variant creates no rule and has no effect.
+-- Explicit GRANT EXECUTE still works. The rule belongs to rckt_schema_owner: functions created by another role are not
+-- affected (verified). The downgrade restores the built-in default.
+ALTER DEFAULT PRIVILEGES FOR ROLE rckt_schema_owner REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+
 -- --- Identity helpers (SECURITY INVOKER: RLS applies to their queries) ---------------------------------------------------
 
 CREATE FUNCTION public.current_app_user_id() RETURNS uuid
@@ -91,9 +97,6 @@ GRANT EXECUTE ON FUNCTION public.app_role_of(uuid) TO rckt_app;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM PUBLIC;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC;
 REVOKE ALL ON ALL FUNCTIONS IN SCHEMA public FROM PUBLIC;
--- Future functions: PostgreSQL grants EXECUTE to PUBLIC on every new function, and ALTER DEFAULT PRIVILEGES cannot
--- change that for functions in this server (verified). Every migration that creates a function must revoke EXECUTE
--- from PUBLIC itself; tests/test_db_security.py fails when a function in public is executable by PUBLIC.
 
 DO $$
 DECLARE
