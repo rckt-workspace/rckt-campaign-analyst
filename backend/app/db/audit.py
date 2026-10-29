@@ -4,29 +4,43 @@ operation it describes. Reading is paginated by id, newest first.
 Nothing here updates or deletes: the database refuses both (migration 0008).
 """
 
+import json
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AuditEvent
 from app.domain.audit import ACTION_RESOURCE_TYPE, AuditDraft
 
 
-async def insert_audit_event(session: AsyncSession, draft: AuditDraft) -> int:
-    """Adds the event to the caller's transaction and returns its id. The caller commits or rolls back."""
-    row = AuditEvent(
-        organization_id=draft.organization_id,
-        source=draft.source,
-        actor_user_id=draft.actor_user_id,
-        action=draft.action,
-        resource_type=ACTION_RESOURCE_TYPE[draft.action],
-        resource_id=draft.resource_id,
-        details=dict(draft.details),
+async def insert_audit_event(session: AsyncSession, draft: AuditDraft) -> None:
+    """Adds the event to the caller's transaction. The caller commits or rolls back.
+
+    No RETURNING. The application role may append events but may not read them back: only the owner reads the trail
+    (migration 0009). PostgreSQL requires a row returned by RETURNING to be visible to the inserting role, so an ORM
+    insert that returns the id would be refused for every role but the owner. Nothing needs the id.
+    """
+    # Explicit INSERT with typed parameters. SQLAlchemy adds RETURNING for the identity column to every insert of this
+    # table (ORM and Core alike), and RETURNING would make the row visible to the inserting role: see the docstring.
+    await session.execute(
+        text(
+            "INSERT INTO public.audit_events"
+            " (organization_id, source, actor_user_id, action, resource_type, resource_id, metadata)"
+            " VALUES (CAST(:organization_id AS uuid), :source, CAST(:actor_user_id AS uuid), :action,"
+            " :resource_type, :resource_id, CAST(:metadata AS jsonb))"
+        ),
+        {
+            "organization_id": str(draft.organization_id),
+            "source": draft.source,
+            "actor_user_id": None if draft.actor_user_id is None else str(draft.actor_user_id),
+            "action": draft.action,
+            "resource_type": ACTION_RESOURCE_TYPE[draft.action],
+            "resource_id": draft.resource_id,
+            "metadata": json.dumps(dict(draft.details)),
+        },
     )
-    session.add(row)
-    await session.flush()
-    return row.id
+
 
 
 async def list_audit_events(

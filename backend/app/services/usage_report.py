@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal
 
-from sqlalchemy import and_, func, select, text
+from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import Analysis, AnalysisQuota, AnalysisQuotaUsage, AnalysisUsage
@@ -47,8 +47,8 @@ class _CallGroup:
 async def usage_report(
     database: Database, *, organization_id: uuid.UUID, period: UsagePeriod, quota_enforced: bool
 ) -> UsageReportRead:
-    async with database.session() as session:
-        await session.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
+    # One transaction: REPEATABLE READ and READ ONLY first, then the identity (app.db.session.Database.session).
+    async with database.session(snapshot=True) as session:
         analyses, without_record = await _analyses(session, organization_id, period)
         calls = await _calls(session, organization_id, period)
         quota_row, usage_row, counted = await _quota(session, organization_id, period)

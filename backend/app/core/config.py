@@ -103,6 +103,9 @@ class DatabaseSettings:
     pool_size: int
     max_overflow: int
     connect_timeout_seconds: float
+    # Test fixtures only: the role the connection assumes at startup (owner-equivalent for the business-logic suite).
+    # Never set by get_database_settings, so production connections keep the login role they were given.
+    session_role: str | None = None
 
 
 DATABASE_URL_PREFIX = "postgresql+asyncpg://"

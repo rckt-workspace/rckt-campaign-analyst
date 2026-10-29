@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AppUser
 from app.db.repositories import UserRepository
-from app.db.session import Database
+from app.db.session import Database, bind_identity
 from app.security.tokens import AuthenticationError, AuthProviderUnavailableError, SupabaseTokenVerifier, VerifiedIdentity
 
 _bearer = HTTPBearer(auto_error=False)
@@ -23,11 +23,6 @@ def get_database(request: Request) -> Database:
     if database is None:
         raise HTTPException(status_code=503, detail="database not configured")
     return database
-
-
-async def get_db_session(database: Database = Depends(get_database)) -> AsyncIterator[AsyncSession]:
-    async with database.session() as session:
-        yield session
 
 
 async def get_verified_identity(
@@ -42,11 +37,25 @@ async def get_verified_identity(
         # Fail closed: without configuration, nothing that needs identity is served.
         raise HTTPException(status_code=503, detail="authentication not configured")
     try:
-        return verifier.verify(credentials.credentials)
+        identity = verifier.verify(credentials.credentials)
     except AuthenticationError:
         raise HTTPException(status_code=401, detail="INVALID_TOKEN", headers={"WWW-Authenticate": "Bearer"}) from None
     except AuthProviderUnavailableError:
         raise HTTPException(status_code=503, detail="authentication unavailable") from None
+    # Binds the verified subject to this request's task. Every session the request opens runs with it, and no other
+    # request sees it (app.db.session.bind_identity).
+    bind_identity(identity.subject)
+    return identity
+
+
+async def get_db_session(
+    database: Database = Depends(get_database),
+    identity: VerifiedIdentity = Depends(get_verified_identity),
+) -> AsyncIterator[AsyncSession]:
+    # Depends on the verified identity, so the identity is bound before this session's first statement. A route that
+    # opens a session without a verified identity gets no business rows (row level security fails closed).
+    async with database.session() as session:
+        yield session
 
 
 async def get_current_user(
