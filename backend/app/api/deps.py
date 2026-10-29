@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AppUser
 from app.db.repositories import UserRepository
-from app.db.session import Database, bind_identity
+from app.db.session import Database, bind_identity, unbind_identity
 from app.security.tokens import AuthenticationError, AuthProviderUnavailableError, SupabaseTokenVerifier, VerifiedIdentity
 
 _bearer = HTTPBearer(auto_error=False)
@@ -28,7 +28,12 @@ def get_database(request: Request) -> Database:
 async def get_verified_identity(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> VerifiedIdentity:
+) -> AsyncIterator[VerifiedIdentity]:
+    """Verifies the bearer token and binds its subject for the whole request.
+
+    A yielding dependency: the binding is restored in the finally block when the request ends, whether it succeeded, failed
+    or was cancelled. A rejected token binds nothing (the exception is raised before the binding).
+    """
     if credentials is None or credentials.scheme.lower() != "bearer" or not credentials.credentials:
         raise HTTPException(status_code=401, detail="AUTHENTICATION_REQUIRED", headers={"WWW-Authenticate": "Bearer"})
 
@@ -42,10 +47,11 @@ async def get_verified_identity(
         raise HTTPException(status_code=401, detail="INVALID_TOKEN", headers={"WWW-Authenticate": "Bearer"}) from None
     except AuthProviderUnavailableError:
         raise HTTPException(status_code=503, detail="authentication unavailable") from None
-    # Binds the verified subject to this request's task. Every session the request opens runs with it, and no other
-    # request sees it (app.db.session.bind_identity).
-    bind_identity(identity.subject)
-    return identity
+    token = bind_identity(identity.subject)
+    try:
+        yield identity
+    finally:
+        unbind_identity(token)
 
 
 async def get_db_session(

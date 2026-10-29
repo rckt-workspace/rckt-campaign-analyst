@@ -10,7 +10,7 @@ no business rows: the failure is closed, not open.
 
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, Token
 
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError, OperationalError
@@ -29,11 +29,24 @@ class DatabaseUnavailableError(Exception):
     """The database cannot be reached or rejected the connection. The message is safe to log and return."""
 
 
-def bind_identity(subject: str) -> None:
-    """Binds a verified subject to the current task. Called only after token verification (app.api.deps)."""
+def bind_identity(subject: str) -> Token[str | None]:
+    """Binds a verified subject to the current context. Called only after token verification (app.api.deps).
+
+    Returns the token that unbind_identity uses to restore the previous value. A context is not cleared by itself when
+    a request ends: the caller must restore it, and the request dependency does (see app.api.deps).
+    """
     if not subject or not subject.strip():
         raise ValueError("an identity needs a non-empty subject")
-    _bound_subject.set(subject)
+    return _bound_subject.set(subject)
+
+
+def unbind_identity(token: Token[str | None]) -> None:
+    """Restores the value that was bound before bind_identity. Never leaves a subject behind, even if the token belongs
+    to another context: then the value is cleared instead."""
+    try:
+        _bound_subject.reset(token)
+    except ValueError:
+        _bound_subject.set(None)
 
 
 def bound_identity() -> str | None:
