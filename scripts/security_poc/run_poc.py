@@ -1,7 +1,8 @@
 """Proof of concept: least-privilege roles and identity-scoped RLS, on a disposable PostgreSQL instance only.
 
 Safety rules, enforced in code:
-- Refuses any host other than 127.0.0.1. Refuses a database name that does not end in _poc_test.
+- Connects only to 127.0.0.1 and to the database rckt_poc_test. Both values are constants in this file; the
+  script has no runtime check for other values, so do not edit them to point elsewhere.
 - Creates cluster-wide roles, so it must run on an instance created for this proof of concept and nothing else.
   Start one with:
       docker run -d --name rckt-sec-poc-pg -p 127.0.0.1:PORT:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16-alpine
