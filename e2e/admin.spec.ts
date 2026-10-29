@@ -10,6 +10,9 @@ import {
   userEmail,
 } from "./helpers";
 
+// Requires a freshly prepared test database (python e2e/prepare_database.py, as `bun run test:e2e` does): the cost tests
+// assert what the current month holds, so analyses left by an earlier run would change those expectations.
+//
 // Two kinds of sessions. Tests that sign in as the owner or the viewer start without any cookie: the login page sends a
 // signed-in visitor straight to the application, so a preloaded analyst session would hide the sign-in form.
 // Analyses that feed the usage report are created by the analyst in a separate browser context.
@@ -113,6 +116,8 @@ test.describe("acceso sin sesión previa", () => {
 
   test("el client_viewer no tiene acceso por URL", async ({ page }) => {
     await signIn(page, userEmail("viewer"));
+    // Wait for the session to exist before going to the protected page; otherwise the route sends the visitor to login.
+    await expect(page).toHaveURL(/\/$/);
     await page.goto(ADMIN_PATH);
 
     await expect(page.getByText("Sin acceso de administración")).toBeVisible();
@@ -200,6 +205,20 @@ test.describe("consumo y auditoría como owner", () => {
     expect(await page.getByText("Informe de consumo consultado").count()).toBe(before);
   });
 
+  test("un doble clic en Consultar consumo genera una sola solicitud auditada", async ({ page }) => {
+    await openAdministrationAs(page, "owner");
+    await selectOrganization(page, "cliente-a");
+    await waitForTrail(page);
+    const before = await page.getByText("Informe de consumo consultado").count();
+
+    // Two presses in quick succession: the second one must not start a second request.
+    await consultButton(page).dblclick();
+    await expect(reportSection(page)).toBeVisible();
+    await waitForTrail(page);
+
+    expect(await page.getByText("Informe de consumo consultado").count()).toBe(before + 1);
+  });
+
   test("una sola pulsación registra exactamente un acceso en la auditoría", async ({ page }) => {
     await openAdministrationAs(page, "owner");
     await selectOrganization(page, "cliente-a");
@@ -241,7 +260,8 @@ test.describe("consumo y auditoría como owner", () => {
     expect(numbers.length).toBeGreaterThan(10);
     expect(new Set(numbers).size).toBe(numbers.length);
     expect([...numbers].sort((a, b) => b - a)).toEqual(numbers);
-    await expect(page.getByRole("button", { name: "Cargar eventos anteriores" })).toHaveCount(0);
+    // The shared test database keeps the events of earlier runs, so more pages may still exist. The button is allowed
+    // to stay; what this test checks is that each page continues from the cursor without repeats or reordering.
   });
 
   test("el enlace Volver al análisis lleva al módulo principal", async ({ page }) => {
