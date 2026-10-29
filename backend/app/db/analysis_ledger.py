@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.audit import insert_audit_event
+from app.db.clock import utc_quota_period
 from app.db.models import Analysis, AnalysisQuota, AnalysisQuotaUsage, AnalysisUsage
 from app.db.session import Database
 from app.domain.analysis import ABANDONED
@@ -50,6 +51,13 @@ class ClaimResult:
     format_valid: bool | None
 
 
+@dataclass(frozen=True)
+class QuotaClaim:
+    """Count this claim against the organization's monthly quota. The month is read inside the claim's transaction."""
+
+    enforce: bool
+
+
 async def claim_analysis(
     database: Database,
     *,
@@ -63,21 +71,91 @@ async def claim_analysis(
     model_requested: str,
     deterministic_report: dict,
     lease_seconds: int,
-    quota_period: date | None = None,
-    enforce_quota: bool = False,
+    quota: QuotaClaim | None = None,
 ) -> ClaimResult:
     """Inserts the running analysis, or finds the one that owns the key. Concurrent claims: exactly one inserts.
 
-    With quota_period, a new claim also consumes one unit of that UTC month in the same transaction. When the quota
-    refuses (QuotaExceededError, QuotaNotConfiguredError), the transaction rolls back: no analysis, no unit.
-    A replay with an existing key consumes nothing. Without quota_period, the analysis is not counted.
+    With quota, a new claim also consumes one unit of its month in the same transaction. The month and created_at both come
+    from PostgreSQL's transaction time (app/db/clock.py); the application clock is never consulted. A refused quota rolls the
+    transaction back: no analysis, no unit, no event. A replay consumes nothing. Without quota, nothing is counted.
     """
+    return await _claim(
+        database,
+        organization_id=organization_id,
+        requested_by=requested_by,
+        campaign_id=campaign_id,
+        metric_entry_id=metric_entry_id,
+        idempotency_key=idempotency_key,
+        input_hash=input_hash,
+        prompt_version=prompt_version,
+        model_requested=model_requested,
+        deterministic_report=deterministic_report,
+        lease_seconds=lease_seconds,
+        quota=quota,
+        period=None,
+    )
+
+
+async def claim_analysis_in_period(
+    database: Database,
+    *,
+    organization_id: uuid.UUID,
+    requested_by: uuid.UUID,
+    campaign_id: uuid.UUID | None,
+    metric_entry_id: uuid.UUID | None,
+    idempotency_key: str,
+    input_hash: str,
+    prompt_version: str,
+    model_requested: str,
+    deterministic_report: dict,
+    lease_seconds: int,
+    period: date,
+    enforce: bool,
+) -> ClaimResult:
+    """For tests only: a claim into a fixed quota month, so month-specific rules are exercised without moving the database
+    clock. Production code never calls it; it has no route and no service."""
+    return await _claim(
+        database,
+        organization_id=organization_id,
+        requested_by=requested_by,
+        campaign_id=campaign_id,
+        metric_entry_id=metric_entry_id,
+        idempotency_key=idempotency_key,
+        input_hash=input_hash,
+        prompt_version=prompt_version,
+        model_requested=model_requested,
+        deterministic_report=deterministic_report,
+        lease_seconds=lease_seconds,
+        quota=QuotaClaim(enforce=enforce),
+        period=period,
+    )
+
+
+async def _claim(
+    database: Database,
+    *,
+    organization_id: uuid.UUID,
+    requested_by: uuid.UUID,
+    campaign_id: uuid.UUID | None,
+    metric_entry_id: uuid.UUID | None,
+    idempotency_key: str,
+    input_hash: str,
+    prompt_version: str,
+    model_requested: str,
+    deterministic_report: dict,
+    lease_seconds: int,
+    quota: QuotaClaim | None,
+    period: date | None,
+) -> ClaimResult:
     async with database.session() as session:
-        if quota_period is not None:
+        if quota is not None and period is None:
+            # The first statement fixes the transaction time: created_at below and this month are the same instant.
+            period = await session.scalar(select(utc_quota_period(func.now())))
+        if quota is not None:
             # The month row must exist before the analysis references it. Harmless if the claim later loses the race.
             await session.execute(
                 pg_insert(AnalysisQuotaUsage)
-                .values(organization_id=organization_id, period_start=quota_period)
+                .values(organization_id=organization_id, period_start=period)
                 .on_conflict_do_nothing()
             )
         claimed_id = (
@@ -95,17 +173,18 @@ async def claim_analysis(
                     deterministic_report=deterministic_report,
                     status="running",
                     used_fallback=False,
+                    created_at=func.now(),
                     lease_expires_at=func.now() + func.make_interval(0, 0, 0, 0, 0, 0, float(lease_seconds)),
-                    quota_period_start=quota_period,
+                    quota_period_start=period,
                 )
                 .on_conflict_do_nothing(constraint="uq_analyses_organization_id_idempotency_key")
                 .returning(Analysis.id)
             )
         ).scalar_one_or_none()
         if claimed_id is not None:
-            if quota_period is not None:
+            if quota is not None:
                 await _consume_unit(
-                    session, organization_id=organization_id, period=quota_period, enforce=enforce_quota
+                    session, organization_id=organization_id, period=period, enforce=quota.enforce
                 )
             # Same transaction as the claim and the unit: a refused quota leaves no analysis and no event.
             await insert_audit_event(session, AuditDraft(
@@ -114,7 +193,7 @@ async def claim_analysis(
                 resource_id=str(claimed_id),
                 source="user",
                 actor_user_id=requested_by,
-                details={"quota_period": None if quota_period is None else f"{quota_period.year:04d}-{quota_period.month:02d}"},
+                details={"quota_period": None if period is None else f"{period.year:04d}-{period.month:02d}"},
             ))
             return ClaimResult("claimed", claimed_id, "running", None, None, None, False, None)
 

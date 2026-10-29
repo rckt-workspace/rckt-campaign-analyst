@@ -5,7 +5,7 @@ OpenRouter or any paid endpoint. Policy: docs/PHASE2_QUOTAS.md.
 """
 
 import asyncio
-from datetime import date, datetime, timedelta, timezone
+from datetime import date
 
 import httpx
 import pytest
@@ -15,7 +15,7 @@ from sqlalchemy.exc import DBAPIError
 from app import cli
 from app.core.config import QuotaConfigurationError, analysis_quota_enforced
 from app.db import analysis_ledger as ledger
-from app.domain.quota import QuotaExceededError, QuotaNotConfiguredError, quota_period_for
+from app.domain.quota import QuotaExceededError, QuotaNotConfiguredError
 from tests.api_fixtures import api_client, token_verifier  # noqa: F401  (pytest fixtures)
 from tests.auth_helpers import make_token
 from tests.conftest import run
@@ -57,7 +57,8 @@ def analysis_count(raw_engine, organization_id) -> int:  # type: ignore[no-untyp
 
 
 async def _claim(database, *, org, user, key, period=PERIOD, enforce=True, lease=LEASE):  # type: ignore[no-untyped-def]
-    return await ledger.claim_analysis(
+    # A fixed month, for the consumption rules. The month itself is tested against the database in test_quota_clock.py.
+    return await ledger.claim_analysis_in_period(
         database,
         organization_id=org,
         requested_by=user,
@@ -69,8 +70,26 @@ async def _claim(database, *, org, user, key, period=PERIOD, enforce=True, lease
         model_requested=PRIMARY,
         deterministic_report=REPORT,
         lease_seconds=lease,
-        quota_period=period,
-        enforce_quota=enforce,
+        period=period,
+        enforce=enforce,
+    )
+
+
+async def _claim_now(database, *, org, user, key, enforce=True):  # type: ignore[no-untyped-def]
+    # The production path: the month is read from PostgreSQL inside the claim's transaction.
+    return await ledger.claim_analysis(
+        database,
+        organization_id=org,
+        requested_by=user,
+        campaign_id=None,
+        metric_entry_id=None,
+        idempotency_key=key,
+        input_hash=HASH,
+        prompt_version="analysis-v1",
+        model_requested=PRIMARY,
+        deterministic_report=REPORT,
+        lease_seconds=LEASE,
+        quota=ledger.QuotaClaim(enforce=enforce),
     )
 
 
@@ -79,17 +98,6 @@ def claim(database, *, org, user, key, period=PERIOD, enforce=True, lease=LEASE)
 
 
 # --- policy: period and configuration -----------------------------------------------------------------------------
-
-def test_the_period_is_the_first_day_of_the_utc_month():
-    late_in_colombia = datetime(2026, 10, 31, 23, 30, tzinfo=timezone(timedelta(hours=-5)))  # 2026-11-01 04:30 UTC
-    assert quota_period_for(late_in_colombia) == NEXT_PERIOD
-    assert quota_period_for(datetime(2026, 10, 31, 23, 59, tzinfo=timezone.utc)) == PERIOD
-
-
-def test_a_naive_datetime_is_refused_because_its_month_would_depend_on_the_server_zone():
-    with pytest.raises(ValueError):
-        quota_period_for(datetime(2026, 10, 1))
-
 
 @pytest.mark.parametrize(
     "raw, expected",
@@ -115,12 +123,12 @@ def test_a_claim_with_available_quota_consumes_one_unit_and_records_its_month(da
     org, user = seed(database, role=None, subject="quota-a", org_slug="quota-a")
     set_quota(database, org, limit=2)
 
-    result = claim(database, org=org, user=user, key="key-quota-0001")
+    result = run(_claim_now(database, org=org, user=user, key="key-quota-0001"))
 
     assert result.outcome == "claimed"
-    assert unit_counts(raw_engine, org) == (1, 0)
+    assert unit_counts(raw_engine, org, db_period(raw_engine)) == (1, 0)
     stored = rows(raw_engine, "SELECT quota_period_start FROM analyses WHERE id = :id", {"id": result.analysis_id})
-    assert stored[0]["quota_period_start"] == PERIOD
+    assert stored[0]["quota_period_start"] == db_period(raw_engine)
 
 
 def test_an_exhausted_quota_refuses_the_claim_and_stores_nothing(database, raw_engine):  # type: ignore[no-untyped-def]
@@ -373,7 +381,7 @@ def test_a_failed_analysis_that_called_the_provider_keeps_its_unit(api_client, d
     failed = post(api_client, org, "quota-owner-e", "key-api-failed-01")
 
     assert failed.json()["status"] == "failed"
-    assert unit_counts(raw_engine, org, _current_period()) == (1, 0)
+    assert unit_counts(raw_engine, org, db_period(raw_engine)) == (1, 0)
     assert post(api_client, org, "quota-owner-e", "key-api-failed-02", OTHER_BODY).status_code == 429
 
 
@@ -387,7 +395,7 @@ def test_a_format_retry_never_adds_a_unit(api_client, database, provider, monkey
 
     assert response.status_code == 201 and response.json()["status"] == "succeeded"
     assert provider.calls == 2
-    assert unit_counts(raw_engine, org, _current_period()) == (1, 0)
+    assert unit_counts(raw_engine, org, db_period(raw_engine)) == (1, 0)
 
 
 def test_a_fallback_answer_never_adds_a_unit(api_client, database, provider, monkeypatch, raw_engine):  # type: ignore[no-untyped-def]
@@ -400,7 +408,7 @@ def test_a_fallback_answer_never_adds_a_unit(api_client, database, provider, mon
 
     assert response.status_code == 201 and response.json()["used_fallback"] is True
     assert provider.calls == 2
-    assert unit_counts(raw_engine, org, _current_period()) == (1, 0)
+    assert unit_counts(raw_engine, org, db_period(raw_engine)) == (1, 0)
 
 
 def test_the_legacy_endpoint_is_retired_when_enforced(api_client, database, provider, monkeypatch):  # type: ignore[no-untyped-def]
@@ -418,8 +426,9 @@ def test_the_legacy_endpoint_is_retired_when_enforced(api_client, database, prov
     assert provider.calls == 0
 
 
-def _current_period() -> date:
-    return quota_period_for(datetime.now(timezone.utc))
+def db_period(raw_engine) -> date:  # type: ignore[no-untyped-def]
+    # The UTC month as PostgreSQL reports it now. Read from the database, never from the Python clock.
+    return rows(raw_engine, "SELECT (date_trunc('month', timezone('UTC', now())))::date AS period", {})[0]["period"]
 
 
 # --- operator procedure -------------------------------------------------------------------------------------------
