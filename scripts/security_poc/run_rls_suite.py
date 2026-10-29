@@ -101,7 +101,12 @@ def recreate_databases(name: str) -> None:
         psql(name, "postgres", f"CREATE DATABASE {database} OWNER rckt_migrator;")
 
 
-def normalized_dump(name: str, database: str) -> list[str]:
+# The downgrade cannot delete a row of pg_default_acl (superuser only). Its effect is checked directly below, and these
+# catalog lines are excluded from the comparison for that reason only.
+DEFAULT_ACL_LINES = ("ALTER DEFAULT PRIVILEGES",)
+
+
+def normalized_dump(name: str, database: str, ignore: tuple[str, ...] = ()) -> list[str]:
     raw = docker("exec", name, "pg_dump", "-s", "--exclude-table=alembic_version", "-U", "postgres", "-d", database)
     lines = []
     for line in raw.splitlines():
@@ -109,16 +114,34 @@ def normalized_dump(name: str, database: str) -> list[str]:
                 or line.startswith("-- Name") or line.startswith("-- PostgreSQL database dump") or line.strip() in ("", "--"):
             continue
         normalized = " ".join(line.split())  # whitespace-insensitive: the generator indents function bodies
-        lines.append(normalized)
+        if not normalized.startswith(ignore):
+            lines.append(normalized)
     return lines
 
 
-def compare(name: str, left: str, right: str, label: str) -> None:
-    a, b = normalized_dump(name, left), normalized_dump(name, right)
+def compare(name: str, left: str, right: str, label: str, ignore: tuple[str, ...] = ()) -> None:
+    a, b = normalized_dump(name, left, ignore), normalized_dump(name, right, ignore)
     if a != b:
         diff = "\n".join(list(difflib.unified_diff(a, b, lineterm=""))[:60])
         raise SystemExit(f"{label}: schemas differ\n{diff}")
     print(f"ok  {label}: identical schemas ({len(a)} normalized lines)")
+
+
+def new_function_public_execute(name: str, database: str) -> bool:
+    """Whether PUBLIC may execute a function the schema owner creates now. Rolled back: nothing is left behind."""
+    statements = [
+        "BEGIN;",
+        # After a downgrade public belongs to pg_database_owner: the schema owner needs CREATE to run the probe.
+        "GRANT CREATE ON SCHEMA public TO rckt_schema_owner;",
+        "SET LOCAL ROLE rckt_schema_owner;",
+        "CREATE FUNCTION public.zz_default_probe() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;",
+        "SELECT has_function_privilege('public', 'public.zz_default_probe()', 'EXECUTE');",
+        "ROLLBACK;",
+    ]
+    sql = "\n".join(statements) + "\n"
+    out = docker("exec", "-i", name, "psql", "-U", "rckt_migrator", "-d", database, "-v", "ON_ERROR_STOP=1",
+                 "-q", "-t", "-A", "-f", "-", stdin=sql)
+    return out.strip().splitlines()[-1] == "t"
 
 
 def alembic(*args: str) -> None:
@@ -162,11 +185,17 @@ def main() -> int:
     alembic("downgrade", "0008_audit_events")
     for path in PORTABLE_FILES_BEFORE_0009:
         psql_file(name, REFERENCE_0008_DB, path, role="rckt_migrator")
-    compare(name, MAIN_DB, REFERENCE_0008_DB, "downgrade to 0008 vs portable 0001-0008")
+    compare(name, MAIN_DB, REFERENCE_0008_DB, "downgrade to 0008 vs portable 0001-0008", ignore=DEFAULT_ACL_LINES)
+    if not new_function_public_execute(name, MAIN_DB):
+        raise SystemExit("FAIL downgrade: PUBLIC does not execute new functions (built-in default expected)")
+    print("ok  downgrade: a new function is executable by PUBLIC again (built-in default)")
     alembic("upgrade", "head")
     exposed = docker("exec", "-i", name, "psql", "-U", "postgres", "-d", MAIN_DB, "-tA", "-c",
                      "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
                      " WHERE n.nspname = 'public' AND has_function_privilege('public', p.oid, 'EXECUTE')")
+    if new_function_public_execute(name, MAIN_DB):
+        raise SystemExit("FAIL upgrade: PUBLIC executes a function the schema owner creates")
+    print("ok  upgrade: a new function created by the schema owner is not executable by PUBLIC")
     if exposed.strip() != "0":
         raise SystemExit(f"FAIL: {exposed.strip()} function(s) in public are executable by PUBLIC")
     print("ok  no function in public is executable by PUBLIC")
