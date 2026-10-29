@@ -284,6 +284,7 @@ def test_check_constraint_names_match_the_models(test_database_url):
         "ck_audit_events_resource_id_not_blank",
         "ck_audit_events_metadata_is_object",
         "ck_audit_events_metadata_size",
+        "ck_audit_events_operator_principal",
         "ck_analyses_quota_period_first_day",
         "ck_analysis_quotas_plan_valid",
         "ck_analysis_quotas_limit_non_negative",
@@ -294,8 +295,8 @@ def test_check_constraint_names_match_the_models(test_database_url):
     }
 
 
-def test_row_level_security_is_enabled_without_policies(test_database_url):
-    # Roles exposed by managed APIs must see nothing until policies are written and verified.
+def test_row_level_security_is_enabled_and_policies_are_for_the_application_role_only(test_database_url):
+    # Roles exposed by managed APIs get no policy. Migration 0009 policies all apply to rckt_app.
     async def state() -> list[tuple[str, bool]]:
         engine = create_async_engine(test_database_url, poolclass=NullPool)
         try:
@@ -307,8 +308,11 @@ def test_row_level_security_is_enabled_without_policies(test_database_url):
                         "AND relname IN ('organizations', 'app_users', 'organization_memberships') ORDER BY relname"
                     )
                 )
-                policies = await connection.scalar(text("SELECT count(*) FROM pg_policies WHERE schemaname = 'public'"))
-                return [(row[0], row[1]) for row in rows] + [("policies", policies == 0)]
+                outside = await connection.scalar(text(
+                    "SELECT count(*) FROM pg_policies WHERE schemaname = 'public'"
+                    " AND roles IS DISTINCT FROM ARRAY['rckt_app']::name[]"
+                ))
+                return [(row[0], row[1]) for row in rows] + [("no policy for other roles", outside == 0)]
         finally:
             await engine.dispose()
 
@@ -316,5 +320,5 @@ def test_row_level_security_is_enabled_without_policies(test_database_url):
         ("app_users", True),
         ("organization_memberships", True),
         ("organizations", True),
-        ("policies", True),
+        ("no policy for other roles", True),
     ]

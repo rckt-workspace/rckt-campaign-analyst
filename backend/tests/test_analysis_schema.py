@@ -118,14 +118,18 @@ def seeded(database, raw_engine):  # type: ignore[no-untyped-def]
 
 # --- structure ---------------------------------------------------------------------------------------------------
 
-def test_new_tables_have_row_level_security_and_no_policies(raw_engine):  # type: ignore[no-untyped-def]
+def test_new_tables_have_row_level_security_and_no_policy_for_other_roles(raw_engine):  # type: ignore[no-untyped-def]
     async def inspect_tables():  # type: ignore[no-untyped-def]
         async with raw_engine.connect() as connection:
             flags = await connection.execute(
                 text("SELECT relname, relrowsecurity FROM pg_class WHERE relname IN ('analyses', 'analysis_usage')")
             )
+            # Migration 0009 adds policies for rckt_app only. Any policy for another role is a defect.
             policies = await connection.execute(
-                text("SELECT count(*) FROM pg_policies WHERE tablename IN ('analyses', 'analysis_usage')")
+                text(
+                    "SELECT count(*) FROM pg_policies WHERE tablename IN ('analyses', 'analysis_usage')"
+                    " AND roles IS DISTINCT FROM ARRAY['rckt_app']::name[]"
+                )
             )
             grants = await connection.execute(text(
                 "SELECT count(*) FROM information_schema.role_table_grants"

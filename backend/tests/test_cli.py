@@ -9,9 +9,8 @@ from tests.conftest import run
 
 
 @pytest.fixture
-def cli_database(monkeypatch, test_database_url, database):  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("DATABASE_URL", test_database_url)
-    monkeypatch.delenv("DATABASE_MIGRATION_URL", raising=False)
+def cli_database(monkeypatch, operator_database_url, database):  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("DATABASE_OPERATOR_URL", operator_database_url)
     return database
 
 
@@ -65,7 +64,9 @@ def test_grant_requires_exactly_one_identifier(cli_database):  # type: ignore[no
 
 
 def test_cli_refuses_without_database_configuration(monkeypatch):  # type: ignore[no-untyped-def]
-    monkeypatch.delenv("DATABASE_URL", raising=False)
-    monkeypatch.delenv("DATABASE_MIGRATION_URL", raising=False)
+    # Only the operator login is used: DATABASE_URL and DATABASE_MIGRATION_URL must not be read by the CLI.
+    monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://app@127.0.0.1:1/rckt_test")
+    monkeypatch.setenv("DATABASE_MIGRATION_URL", "postgresql+asyncpg://migrator@127.0.0.1:1/rckt_test")
+    monkeypatch.delenv("DATABASE_OPERATOR_URL", raising=False)
     with pytest.raises(SystemExit):
         cli._database()

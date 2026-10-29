@@ -40,6 +40,25 @@ def alembic_config() -> Config:
     return config
 
 
+def _owner_role() -> str | None:
+    """Business-logic tests run as the schema owner, which row level security does not restrict (as before 0009).
+    TEST_OWNER_ROLE names that role on the disposable instance. Unset, the test URL's own login is used."""
+    return os.environ.get("TEST_OWNER_ROLE", "").strip() or None
+
+
+@pytest.fixture(scope="session")
+def operator_database_url(test_database_url: str) -> str:
+    """The login of an rckt_operator member. The operator procedures are the only path the CLI uses."""
+    url = os.environ.get("TEST_OPERATOR_DATABASE_URL", "").strip()
+    if not url:
+        pytest.skip("TEST_OPERATOR_DATABASE_URL is not set; the operator procedures need an rckt_operator login")
+    if not url.startswith("postgresql+asyncpg://"):
+        raise RuntimeError("TEST_OPERATOR_DATABASE_URL must use the postgresql+asyncpg:// scheme")
+    if not url.rsplit("/", 1)[-1].split("?", 1)[0].endswith("_test"):
+        raise RuntimeError("Refusing to run database tests: the database name must end in _test")
+    return url
+
+
 @pytest.fixture(scope="session")
 def test_database_url() -> Iterator[str]:
     url = _test_database_url()
@@ -58,7 +77,9 @@ def test_database_url() -> Iterator[str]:
 @pytest.fixture
 def database(test_database_url: str) -> Iterator[Database]:
     """A Database with NullPool, so each asyncio.run in a test gets fresh connections. Tables are emptied first."""
-    settings = DatabaseSettings(url=test_database_url, pool_size=1, max_overflow=0, connect_timeout_seconds=5)
+    settings = DatabaseSettings(
+        url=test_database_url, pool_size=1, max_overflow=0, connect_timeout_seconds=5, session_role=_owner_role(),
+    )
     db = Database(settings, poolclass=NullPool)
 
     async def truncate() -> None:
@@ -74,6 +95,9 @@ def database(test_database_url: str) -> Iterator[Database]:
 
 @pytest.fixture
 def raw_engine(test_database_url: str) -> Iterator[object]:
-    engine = create_async_engine(test_database_url, poolclass=NullPool)
+    role = _owner_role()
+    engine = create_async_engine(
+        test_database_url, poolclass=NullPool, connect_args={"server_settings": {"role": role}} if role else {},
+    )
     yield engine
     run(engine.dispose())

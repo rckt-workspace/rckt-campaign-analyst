@@ -210,9 +210,18 @@ def test_an_exhausted_quota_records_no_analysis_created(api_client, database, pr
     assert _actions(raw_engine, org) == []
 
 
-def test_a_quota_change_by_the_cli_records_the_previous_and_new_values(database, raw_engine, test_database_url, monkeypatch):  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("DATABASE_URL", test_database_url)
-    monkeypatch.delenv("DATABASE_MIGRATION_URL", raising=False)
+def raw_run(raw_engine, statement: str) -> None:  # type: ignore[no-untyped-def]
+    """Runs a DDL or DML statement as the owner-equivalent test role, outside the application code."""
+
+    async def execute():  # type: ignore[no-untyped-def]
+        async with raw_engine.begin() as connection:
+            await connection.execute(text(statement))
+
+    run(execute())
+
+
+def test_a_quota_change_by_the_cli_records_the_previous_and_new_values(database, raw_engine, operator_database_url, monkeypatch):  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("DATABASE_OPERATOR_URL", operator_database_url)
     run(cli.create_organization("Aud Cuota", "aud-cuota"))
     org = rows(raw_engine, "SELECT id FROM organizations WHERE slug = 'aud-cuota'")[0]["id"]
 
@@ -228,9 +237,8 @@ def test_a_quota_change_by_the_cli_records_the_previous_and_new_values(database,
     assert all(e["source"] == "operator_cli" and e["actor_user_id"] is None for e in events)
 
 
-def test_a_membership_granted_by_the_cli_records_an_operator_event(database, raw_engine, test_database_url, monkeypatch):  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("DATABASE_URL", test_database_url)
-    monkeypatch.delenv("DATABASE_MIGRATION_URL", raising=False)
+def test_a_membership_granted_by_the_cli_records_an_operator_event(database, raw_engine, operator_database_url, monkeypatch):  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("DATABASE_OPERATOR_URL", operator_database_url)
     run(cli.create_organization("Aud Miembro", "aud-miembro"))
     run(cli.provision_user("aud-sub-cli", "cli@example.com"))
     cli.main(["grant-membership", "--organization-slug", "aud-miembro", "--role", "analyst", "--subject", "aud-sub-cli"])
@@ -241,17 +249,25 @@ def test_a_membership_granted_by_the_cli_records_an_operator_event(database, raw
     assert event["actor_user_id"] is None and event["metadata"] == {"role": "analyst"}
 
 
-def test_a_refused_quota_write_leaves_neither_the_quota_nor_its_event(database, raw_engine, test_database_url, monkeypatch):  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("DATABASE_URL", test_database_url)
-    monkeypatch.delenv("DATABASE_MIGRATION_URL", raising=False)
+def test_a_refused_quota_write_leaves_neither_the_quota_nor_its_event(database, raw_engine, operator_database_url, monkeypatch):  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("DATABASE_OPERATOR_URL", operator_database_url)
     run(cli.create_organization("Aud Falla", "aud-falla"))
 
-    async def refuse(session, draft):  # type: ignore[no-untyped-def]
-        raise DBAPIError("INSERT INTO audit_events", None, Exception("injected refusal"))
-
-    monkeypatch.setattr(cli, "insert_audit_event", refuse)
-    with pytest.raises(DBAPIError):
-        cli.main(["set-analysis-quota", "--organization-slug", "aud-falla", "--plan", "pilot", "--monthly-limit", "9"])
+    # The event is written by the operator function, in its own transaction with the change. A trigger in the test
+    # database refuses this one event, the way a database refusal would: the quota change must not survive it.
+    refusing_trigger = (
+        "CREATE FUNCTION public.zz_refuse_quota_event() RETURNS trigger LANGUAGE plpgsql AS $$"
+        " BEGIN RAISE EXCEPTION 'injected refusal'; END $$"
+    )
+    raw_run(raw_engine, refusing_trigger)
+    raw_run(raw_engine, "CREATE TRIGGER zz_refuse_quota_event BEFORE INSERT ON public.audit_events"
+                        " FOR EACH ROW WHEN (NEW.action = 'quota.updated') EXECUTE FUNCTION public.zz_refuse_quota_event()")
+    try:
+        with pytest.raises(SystemExit):
+            cli.main(["set-analysis-quota", "--organization-slug", "aud-falla", "--plan", "pilot", "--monthly-limit", "9"])
+    finally:
+        raw_run(raw_engine, "DROP TRIGGER zz_refuse_quota_event ON public.audit_events")
+        raw_run(raw_engine, "DROP FUNCTION public.zz_refuse_quota_event()")
 
     assert rows(raw_engine, "SELECT count(*) AS n FROM analysis_quotas q JOIN organizations o ON o.id = q.organization_id"
                             " WHERE o.slug = 'aud-falla'")[0]["n"] == 0
