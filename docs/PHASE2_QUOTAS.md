@@ -14,7 +14,8 @@ OpenRouter en las pruebas.
 
 ## 2. Política de consumo (determinista)
 
-Una solicitud de análisis **consume una unidad** de la cuota del mes UTC en que se reclama. La unidad se decide por el
+Una solicitud de análisis **consume una unidad** de la cuota del mes UTC en que se reclama. El mes lo fija PostgreSQL en
+la misma transacción que crea el análisis (ver `PHASE2_QUOTA_CLOCK.md`). La unidad se decide por el
 resultado, según si alguna llamada llegó a reservarse:
 
 | Resultado | Llamadas reservadas | Unidad |
@@ -109,7 +110,8 @@ Crea o actualiza la fila de cuota. Requiere `DATABASE_URL` o `DATABASE_MIGRATION
 
 ## 8. Verificación
 
-`backend/tests/test_quota.py`: 38 pruebas. Cubren la política de periodo, el flag estricto, el consumo, el agotamiento,
+`backend/tests/test_quota.py`: 36 pruebas. La política del mes UTC y la coherencia del reloj están en `test_quota_clock.py`.
+Cubren el flag estricto, el consumo, el agotamiento,
 dos reclamaciones concurrentes con una unidad, el replay, el aislamiento por organización, el cambio de mes UTC, la cuota
 ausente, el modo sin enforcement, un fallo de BD durante la reserva, la liberación con y sin llamadas, el reintento de
 formato, el fallback, el endpoint legado y el CLI. Ningún test llama a OpenRouter real.

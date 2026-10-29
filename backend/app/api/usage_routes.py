@@ -8,20 +8,21 @@ Permissions are checked in the backend, with the membership of the path's organi
 
 import logging
 import uuid
-from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_database, get_db_session
 from app.core.config import QuotaConfigurationError, analysis_quota_enforced
+from app.db.clock import utc_quota_period
 from app.db.models import AppUser
 from app.db.session import Database, DatabaseUnavailableError
 from app.domain.access import ADMIN_ROLES
 from app.domain.audit import AuditDraft
 from app.domain.schemas import UsageReportRead
-from app.domain.usage_report import PERIOD_PATTERN, current_period, parse_period
+from app.domain.usage_report import PERIOD_PATTERN, parse_period
 from app.services import audit as audit_service
 from app.services import usage_report as usage_service
 from app.services.access import OrganizationNotFoundError, PermissionDeniedError, require_role
@@ -59,7 +60,12 @@ async def usage_report(
         logger.error("ANALYSIS_QUOTA_ENFORCED has an invalid value; usage report refused")
         raise HTTPException(status_code=503, detail="QUOTA_CONFIGURATION_INVALID") from None
 
-    chosen = parse_period(period) if period is not None else current_period(datetime.now(UTC))
+    if period is not None:
+        chosen = parse_period(period)
+    else:
+        # The default month is read from PostgreSQL, the same clock that assigns quota months (app/db/clock.py).
+        month = await session.scalar(select(utc_quota_period(func.now())))
+        chosen = parse_period(f"{month.year:04d}-{month.month:02d}")
     report = await usage_service.usage_report(
         database, organization_id=organization_id, period=chosen, quota_enforced=enforced
     )

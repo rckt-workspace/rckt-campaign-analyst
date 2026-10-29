@@ -118,8 +118,9 @@ con `Decimal` y `NUMERIC(18, 8)`; la serialización es texto.
 
 ## 5. Diseño técnico
 
-- `app/domain/usage_report.py`: periodo UTC (`parse_period`, `current_period`), patrón del periodo y regla de completitud
-  (`cost_completeness`). Puro, sin base de datos.
+- `app/domain/usage_report.py`: periodo UTC (`parse_period`), patrón del periodo y regla de completitud
+  (`cost_completeness`). Puro, sin base de datos. El periodo por defecto lo calcula PostgreSQL
+  (`PHASE2_QUOTA_CLOCK.md`), no Python.
 - `app/services/usage_report.py`: `usage_report()` y las consultas agregadas (`_analyses`, `_calls`, `_quota`), más la
   composición de la respuesta. Consultas agregadas en PostgreSQL, sin tabla de resumen.
 - `app/api/usage_routes.py`: autorización con `require_role(ADMIN_ROLES)`, validación del periodo, configuración del

@@ -269,7 +269,7 @@ def test_a_refused_event_rolls_back_the_claim_and_its_unit(database, raw_engine,
         run(ledger.claim_analysis(
             database, organization_id=org, requested_by=user, campaign_id=None, metric_entry_id=None,
             idempotency_key="key-aud-claim-01", input_hash=HASH, prompt_version="analysis-v1", model_requested=PRIMARY,
-            deterministic_report=REPORT, lease_seconds=120, quota_period=None,
+            deterministic_report=REPORT, lease_seconds=120,
         ))
 
     assert rows(raw_engine, "SELECT count(*) AS n FROM analyses WHERE organization_id = :o", {"o": org})[0]["n"] == 0
