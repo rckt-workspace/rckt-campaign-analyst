@@ -45,16 +45,23 @@ reclama, con el mismo `now()` que usa `created_at`.
 
 ## 5. Límites conocidos
 
-- `now()` depende del reloj del servidor PostgreSQL. Si ese reloj retrocede, `created_at` puede no ser monótono entre dos
-  análisis. Esta fase no cambia esa fuente: la verdad temporal es la base de datos. El retroceso medido (~0,5 s) está
-  documentado en `PHASE2_PROVIDER_USAGE.md` §8.
+- `now()` depende del reloj del servidor PostgreSQL. PostgreSQL no garantiza monotonía absoluta de `now()` entre
+  transacciones: si ese reloj retrocede, `created_at` y el mes de un análisis posterior pueden quedar por detrás de
+  los de uno anterior. La coherencia se garantiza dentro de cada transacción, no entre ellas. Esta fase no cambia esa
+  fuente: la verdad temporal es la base de datos. El retroceso medido (~0,5 s) está documentado en
+  `PHASE2_PROVIDER_USAGE.md` §8.
 - Los análisis anteriores a la fase 2.6A no tienen `quota_period_start`. No cambian.
 - `claim_analysis_in_period` (periodo fijo) existe solo para pruebas. Ninguna ruta de producción la llama.
 - `current_period(instant)` de `app/domain/usage_report.py` ya no lo usa el camino de cuota. Solo la prueba de informe lo
   usa para calcular el valor esperado.
 - El selector de periodo del frontend usa la fecha del navegador. Es solo presentación; el backend decide el mes.
 
-## 6. Pruebas
+## 6. Pendientes fuera de esta fase
+
+- Ejecución E2E completa en un solo proceso y revisión visual de `/administracion`: pendientes desde la fase 2.6B2C.
+  Esta fase no las ejecuta ni las sustituye.
+
+## 7. Pruebas
 
 Comandos: `pytest tests/test_quota_clock.py tests/test_quota.py tests/test_analysis_ledger.py` (75 pasan) y la suite completa
 `pytest tests` en un solo proceso, secuencial, sin E2E (451 pasan). Base de pruebas: `rckt_test`.
