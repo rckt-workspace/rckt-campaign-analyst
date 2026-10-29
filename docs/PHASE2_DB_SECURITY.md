@@ -17,6 +17,10 @@ migraciones nuevas. La implementación queda para 2.7B2.
   incluido el aislamiento entre organizaciones, `GET /me` con varias organizaciones, la cuota del analista, y las
   restricciones de `TRUNCATE`, `ALTER`, `CREATE POLICY` y escritura sobre `audit_events`.
 
+- **Decisión aprobada (Fase 2.7B1):** la CLI administrativa usa la identidad `rckt_operator`, con permisos explícitos y
+  limitados, separada de `rckt_app`, `rckt_migrator` y `rckt_schema_owner`. Quedan descartados `SUPERUSER`, `BYPASSRLS` y
+  el uso cotidiano de credenciales del propietario (§2.3).
+
 ## 1. Diagnóstico del esquema actual
 
 ### 1.1 Lo que se verificó (auditoría de solo lectura, `scripts/db_security_audit.py`)
@@ -57,25 +61,32 @@ Ejecutada contra `rckt_test` (base local de pruebas, clúster `rckt-campaign-ana
 - **Si el SQL Editor de Lovable ejecuta las migraciones con el mismo rol que usa la aplicación en producción.** Es
   probable, pero no verificado.
 
-## 2. Separación de roles (análisis)
+## 2. Separación de roles
 
-| Rol | Quién lo usa | Hoy | Propuesta |
-|---|---|---|---|
-| **A. Propietario del esquema** (`rckt_owner` en el diseño) | Migraciones y mantenimiento. Nunca lo usa el servicio HTTP | Coincide con el rol de la aplicación (`rckt`) | Login propio, no superusuario, sin `BYPASSRLS`. Dueño de las tablas. Sus credenciales no están en el entorno de la aplicación |
-| **B. Migrador** | Comandos de Alembic (`DATABASE_MIGRATION_URL`) | Mismo rol que A | Puede ser el propietario o un rol que pertenezca a él. Debe poder crear objetos, no ejecutar peticiones |
-| **C. Aplicación FastAPI** (`rckt_app`) | `DATABASE_URL` del contenedor backend | Propietario, superusuario y `BYPASSRLS` | Sin propiedad de tablas, sin superusuario, sin `BYPASSRLS`, con grants mínimos y políticas |
-| **D. Operador CLI** (`rckt_operator`) | `python -m app.cli ...` | Usa `DATABASE_URL` o `DATABASE_MIGRATION_URL` | Credencial separada, fuera del entorno del contenedor. Permisos explícitos para `organizations`, `app_users`, `organization_memberships` y `analysis_quotas`. Decisión pendiente (§4.3) |
-| **E. `anon` / `authenticated`** (Supabase) | Clientes del navegador, si la API de datos de Supabase se expusiera | Sin grants en el repositorio; no verificado en vivo | Cero privilegios sobre tablas de negocio, verificado con consultas |
-| **F. Roles internos gestionados** (`service_role`, `supabase_admin`, `postgres`) | Plataforma | Desconocido | Fuera de nuestro control. Ningún secreto de `service_role` debe llegar a FastAPI ni al navegador |
+| Rol | Login | Uso | Atributos | Propiedad y privilegios |
+|---|---|---|---|---|
+| **rckt_schema_owner** (A) | No (`NOLOGIN`) | Propietario de los objetos de `public`: tablas, funciones y secuencias | `NOSUPERUSER NOBYPASSRLS` | Propietario del esquema. Ninguna sesión de aplicación lo usa |
+| **rckt_migrator** (B) | Sí | Solo migraciones (Alembic y SQL portable), con `SET ROLE rckt_schema_owner` | `NOSUPERUSER NOBYPASSRLS`; miembro de `rckt_schema_owner` | No es propietario de tablas. No se usa para peticiones ni para la CLI |
+| **rckt_app** (C) | Sí | `DATABASE_URL` del contenedor backend | `NOSUPERUSER NOBYPASSRLS` | No es propietario. Grants mínimos y políticas (§2.1) |
+| **rckt_operator** (D) | Sí | Procedimientos administrativos de la CLI (`DATABASE_OPERATOR_URL`) | `NOSUPERUSER NOBYPASSRLS` | No es propietario. Grants por comando (§2.4) |
+| **anon / authenticated** (E) | No aplica | Roles de la API de datos de Supabase | — | Sin grants sobre tablas de negocio. Verificado solo sobre roles simulados; no verificado en Cloud |
+| **Roles gestionados** (F) | — | `service_role`, `supabase_admin`, `postgres` | Desconocido | Fuera de nuestro control. `service_role` salta RLS: nunca debe llegar al backend ni al navegador |
+
+Nota de nombres: en la prueba de concepto el propietario se llamó `rckt_owner` y tenía login. Corresponde al rol A del
+diseño, que es `NOLOGIN`. El script no se modificó para conservar la evidencia.
 
 Los requisitos del encargo se cumplen así:
 
-- **FastAPI no es superusuario ni tiene `BYPASSRLS`.** Verificado en la prueba de concepto (check 1).
-- **FastAPI no es propietario de `audit_events` ni de ninguna tabla.** Verificado (check 2 y check de `TRUNCATE`).
-- **No puede hacer `TRUNCATE` ni desactivar disparadores ni alterar tablas.** Verificado.
-- **No puede modificar migraciones** (no tiene `CREATE` en `public` ni posee tablas). Verificado con `CREATE TABLE`/`CREATE POLICY`.
-- **Ni `anon` ni `authenticated` reciben privilegios.** Verificado en la prueba de concepto, sobre roles simulados.
-- **Nunca `USING (true)`.** Ninguna política de la propuesta lo usa.
+- **FastAPI no es superusuario ni tiene `BYPASSRLS`.** Verificado en la prueba de concepto (comprobación 1).
+- **FastAPI no es propietario de `audit_events` ni de ninguna tabla.** Verificado (comprobación 1 y comprobaciones de `TRUNCATE`).
+- **FastAPI no puede hacer `TRUNCATE`, desactivar disparadores ni alterar tablas.** Verificado (comprobación 9).
+- **FastAPI no puede modificar migraciones.** No tiene `CREATE` en `public` ni posee tablas. Verificado.
+- **Ni `anon` ni `authenticated` reciben privilegios.** Verificado sobre roles simulados.
+- **El operador no es superusuario, no tiene `BYPASSRLS`, no posee tablas y no puede hacer `TRUNCATE`.** Por diseño y por
+  los grants de §2.4. El rol `rckt_operator` se creó en la prueba de concepto **sin grants ni políticas**: su acceso
+  no se probó.
+- **Nunca `USING (true)` para la aplicación.** Ninguna política de `rckt_app` lo usa. La única excepción propuesta, para el
+  operador, está en §2.5 y requiere aprobación.
 
 ### 2.1 Matriz de privilegios propuesta (`rckt_app`)
 
@@ -112,6 +123,72 @@ Sin ningún grant: `TRUNCATE`, `REFERENCES`, `TRIGGER`, `DELETE` sobre `audit_ev
   mínimos y una fila en la matriz de este documento. Una prueba de regresión debe fallar si una tabla de negocio no tiene
   RLS o tiene grants a `anon`, `authenticated` o `PUBLIC`.
 
+### 2.3 Decisión aprobada: `rckt_operator`
+
+Las operaciones administrativas de la CLI (`create-organization`, `provision-user`, `grant-membership` y
+`set-analysis-quota`) se ejecutan con la identidad **`rckt_operator`**, separada de `rckt_app`, `rckt_migrator` y
+`rckt_schema_owner`.
+
+- **Descartado:** `SUPERUSER`, `BYPASSRLS` y el uso cotidiano de las credenciales del propietario de las tablas.
+- **Credencial:** `DATABASE_OPERATOR_URL`. No se incluye en el contenedor del backend ni en el `.env` de la aplicación de
+  producción; su uso queda limitado a procedimientos del operador. Hoy `cli.py` usa `DATABASE_MIGRATION_URL` si existe y
+  `DATABASE_URL` si no (R6). La corrección forma parte de 2.7B2.
+- **Trazabilidad:** cada evento que escribe la CLI lleva `source = operator_cli` y `actor_user_id` nulo. La identidad de la
+  persona que opera **no se registra**. Es una cuestión abierta para 2.7B2 (R14) y este documento no la resuelve.
+
+### 2.4 Permisos por comando
+
+Derivados de `backend/app/cli.py` y de los repositorios que llama (`OrganizationRepository.create`,
+`UserRepository.get_or_create_by_subject`, `MembershipRepository.get_for_user` y `add`, `insert_audit_event`).
+
+| Comando | Lectura | Escritura | Auditoría |
+|---|---|---|---|
+| `create-organization` | `organizations`: SELECT (por `RETURNING`) | `organizations`: INSERT | Ninguna (R13) |
+| `provision-user` | `app_users`: SELECT por `external_subject` | `app_users`: INSERT; UPDATE de `email` si cambia | Ninguna (R13) |
+| `grant-membership` | `organizations`: SELECT por slug; `app_users`: SELECT por subject o email; `organization_memberships`: SELECT | `organization_memberships`: INSERT | `audit_events`: INSERT con `membership.granted`, `source = operator_cli` |
+| `set-analysis-quota` | `organizations`: SELECT por slug; `analysis_quotas`: SELECT `FOR UPDATE` | `analysis_quotas`: INSERT `ON CONFLICT DO UPDATE` | `audit_events`: INSERT con `quota.updated`, `source = operator_cli` |
+
+PostgreSQL exige privilegio `UPDATE` para `SELECT ... FOR UPDATE` y para `ON CONFLICT DO UPDATE`. Es documentación del
+motor, no comprobado en esta fase.
+
+Grants consolidados de `rckt_operator`:
+
+| Tabla | Privilegios | Motivo |
+|---|---|---|
+| `organizations` | SELECT, INSERT | `create-organization`; búsqueda por slug |
+| `app_users` | SELECT, INSERT, UPDATE (solo la columna `email`) | `provision-user`; búsqueda en `grant-membership` |
+| `organization_memberships` | SELECT, INSERT | `grant-membership`. Sin UPDATE ni DELETE: la CLI rechaza duplicados y no cambia roles |
+| `analysis_quotas` | SELECT, INSERT, UPDATE | `set-analysis-quota` |
+| `audit_events` | INSERT, y USAGE en `audit_events_id_seq` | Eventos de los comandos que modifican datos |
+| Resto de tablas | Ninguno | El operador no crea análisis, campañas ni uso de cuota |
+
+Denegados explícitamente, y verificables con la consulta de §10.3: `SUPERUSER`, `BYPASSRLS`, propiedad de tablas,
+`TRUNCATE`, `DELETE`, `REFERENCES`, `TRIGGER`, `UPDATE` y `DELETE` sobre `audit_events`, y cualquier DDL.
+
+### 2.5 Políticas propuestas para el operador (no probadas)
+
+La prueba de concepto no incluyó políticas para `rckt_operator`. Estas son propuestas para 2.7B2:
+
+- `organizations`: INSERT con `WITH CHECK (status = 'active')`.
+- `app_users`: INSERT con `WITH CHECK (external_subject <> '')`; UPDATE de `email` con
+  `WITH CHECK (email IS NULL OR email ~ '^[^@\s]+@[^@\s]+$')`.
+- `organization_memberships`: INSERT con `WITH CHECK (role IN ('owner', 'analyst', 'client_viewer'))`.
+- `analysis_quotas`: INSERT y UPDATE con `WITH CHECK (plan IN ('pilot', 'standard', 'enterprise') AND monthly_analysis_limit >= 0)`.
+- `audit_events`: INSERT con `WITH CHECK (source = 'operator_cli' AND actor_user_id IS NULL)`.
+
+**Excepción que requiere aprobación explícita.** Las búsquedas de la CLI (por slug, por `external_subject` y por email)
+necesitan leer `organizations`, `app_users`, `organization_memberships` y `analysis_quotas` sin filtro por identidad. Hay
+dos caminos:
+
+1. `USING (true)` en esas cuatro tablas, solo SELECT, solo `TO rckt_operator`. Es lo más simple, pero es exactamente el
+   patrón que este documento rechaza para la aplicación. Requiere aprobación.
+2. Funciones de búsqueda `SECURITY DEFINER`, propiedad de `rckt_schema_owner`, con `EXECUTE` solo para `rckt_operator`,
+   `search_path = pg_catalog, public`, que devuelven como mucho una fila por clave exacta. Más código, pero el operador no
+   puede listar tablas enteras.
+
+**Recomendación: el camino 2.** No abre lectura masiva, y cumple los criterios de §5.7. Si se elige el 1, la excepción
+debe quedar registrada en el documento con su aprobación.
+
 ## 3. Riesgos reales
 
 Gravedad: **Crítica** (acceso a datos de otras organizaciones o destrucción de datos, plausible hoy), **Alta** (pérdida de la
@@ -125,13 +202,15 @@ garantía de aislamiento o de integridad, requiere condiciones), **Media** (defe
 | R3 | Si `anon` o `authenticated` tienen `TRUNCATE` o `DELETE` sobre tablas de negocio, RLS no lo impide: `TRUNCATE` no pasa por políticas | **Crítica si se confirma** | *No verificado*. Hipótesis por la configuración por defecto de Supabase |
 | R4 | El cliente generado de Lovable usa `service_role`, que salta RLS | **Media** | No importado hoy. Riesgo de importación accidental |
 | R5 | El aislamiento entre organizaciones descansa solo en la capa de aplicación (`require_role`), sin segunda barrera | **Alta** | Verificado (no hay políticas) |
-| R6 | El operador CLI usa las mismas credenciales que la aplicación en desarrollo, sin atribución propia | **Media** | Verificado (`cli.py` usa `DATABASE_URL`) |
+| R6 | `cli.py` usa `DATABASE_MIGRATION_URL` si existe, y `DATABASE_URL` si no: las operaciones administrativas heredan el rol de migraciones o de la aplicación | **Media** | Verificado en `cli.py`. Corrección en 2.7B2 |
 | R7 | El contexto de identidad, si se implementa con variables de sesión, puede fijarlo cualquier código que tenga la credencial de `rckt_app` (§5.4) | **Media** | Limitación de diseño |
 | R8 | Si el contexto se fijara en modo sesión (`is_local = false`), se filtraría entre peticiones del pool | **Alta si ocurre** | Mitigado en la propuesta; la prueba de concepto lo demuestra (§7) |
 | R9 | Una política mal escrita (`USING (true)` o una recursión entre `organization_memberships` y `organizations`) abriría datos o rompería `GET /me` | **Alta** | Evitado por diseño y probado |
 | R10 | La reclamación atómica de cuotas depende de leer el límite en la misma transacción; si el rol no puede leer `analysis_quotas`, el consumo devuelve cero filas y se rechaza como si la cuota estuviera agotada | **Media** | Detectado en la prueba de concepto (§7.2) |
 | R11 | Los procesos internos sin usuario (ninguno hoy) no tendrían contexto y no verían datos | **Baja** | Sin procesos batch hoy; ver §5.5 |
 | R12 | `DATABASE_URL` y `DATABASE_MIGRATION_URL` pueden apuntar al mismo rol, lo que impide separar migraciones y ejecución | **Media** | Verificado en la configuración local |
+| R13 | `create-organization` y `provision-user` no generan eventos de auditoría | **Media** | Verificado en `cli.py` |
+| R14 | La persona que opera la CLI no queda registrada: todos los eventos `operator_cli` comparten el mismo rol y no tienen actor | **Media** | Verificado. Pendiente para 2.7B2 |
 
 ## 4. Arquitectura propuesta
 
@@ -149,21 +228,9 @@ comparar con el límite. Si el rol no puede leer el límite, el `UPDATE` afecta 
 como cuota agotada. La prueba de concepto lo confirmó: con la política retirada, el analista obtiene `UPDATE 0`
 (§7.2). El límite no es secreto de la organización frente a sus miembros, así que la política de lectura es segura.
 
-### 4.3 Operador CLI (decisión pendiente)
+### 4.3 Operador CLI (decisión aprobada)
 
-Opciones:
-
-- **A. El operador usa el rol propietario.** Es lo más simple y coincide con el modelo actual de migraciones, pero da al
-  operador acceso total a la base. Aceptable solo como procedimiento excepcional.
-- **B. Rol `rckt_operator` con grants explícitos y políticas `TO rckt_operator`.** Mínimo privilegio con control claro.
-  No se usan políticas `USING (true)`: las condiciones deben expresar la operación (por ejemplo, que la membresía
-  insertada apunte a una organización y a un usuario existentes, y que el evento sea `operator_cli` sin actor).
-- **C. `rckt_operator` con `BYPASSRLS`.** Rechazada: contradice el requisito del encargo y el documento de decisiones, salvo
-  decisión explícita.
-
-**Recomendación: B.** Requiere decidir si el operador puede usar una credencial separada, sin llegar al contenedor de la
-aplicación, y cómo se registra su actividad (`audit_events` con `source = operator_cli`, que hoy no está atribuido a una
-persona: R6).
+Identidad `rckt_operator`, con permisos explícitos por comando, sin `SUPERUSER`, `BYPASSRLS` ni propiedad de tablas. Detalle en §2.3 a §2.5. La forma de las búsquedas de la CLI (§2.5) queda pendiente de aprobación.
 
 ### 4.4 Qué queda fuera de RLS
 
@@ -228,7 +295,7 @@ El pool de SQLAlchemy reutiliza conexiones. Por eso:
 
 **No se propone ninguna en la fase 2.7B2.** Las dos funciones de ayuda son `SECURITY INVOKER` y no necesitan más
 privilegios que los del rol. Si en el futuro se necesitara una (por ejemplo, para resolver `app_users` en el primer
-acceso sin conceder `SELECT` amplio), debería cumplir: propietario `rckt_owner` no superusuario, `EXECUTE` solo para
+acceso sin conceder `SELECT` amplio), debería cumplir: propietario `rckt_schema_owner` (sin login), no superusuario, `EXECUTE` solo para
 `rckt_app`, `search_path = pg_catalog, public` y cuerpo que no acepte identidades arbitrarias.
 
 ### 5.8 Recursión
@@ -298,6 +365,8 @@ Las comprobaciones, agrupadas:
    para `anon` ni `authenticated`.
 10. **Escritura autorizada:** un evento `user` atribuido al propio usuario en su organización se acepta; uno atribuido a
     otra persona, y uno `internal` desde el rol de aplicación, se rechazan.
+
+Nombres: en esta prueba el propietario se llama `rckt_owner` y tiene login; en el diseño corresponde a `rckt_schema_owner` (sin login) y `rckt_migrator`. El script no se cambió para no invalidar la evidencia. `rckt_operator` se creó sin grants ni políticas, y no se probó.
 
 ### 7.2 Control negativo
 
@@ -381,15 +450,15 @@ Alcance: un solo cambio de seguridad, con prueba y procedimiento de reversión. 
 
 ### 9.3 Provisionamiento de roles
 
-- Creación de `rckt_app`, `rckt_operator` y el propietario, si no existen, con `NOSUPERUSER NOBYPASSRLS`.
+- Creación de `rckt_schema_owner` (`NOLOGIN`), `rckt_migrator`, `rckt_app` y `rckt_operator`, si no existen, todos con `NOSUPERUSER NOBYPASSRLS`. `rckt_migrator` pasa a ser miembro de `rckt_schema_owner`. `rckt_operator` recibe solo los grants de §2.4.
 - Asignación de la contraseña fuera del repositorio.
 - Verificación de atributos con la consulta de §10.3.
 
 ### 9.4 Conexiones
 
 - `DATABASE_URL` (aplicación) → `rckt_app`. **Cambio de variable en el entorno de producción, no en el repositorio.**
-- `DATABASE_MIGRATION_URL` → propietario/migrador.
-- `DATABASE_OPERATOR_URL` → operador (nueva).
+- `DATABASE_MIGRATION_URL` → `rckt_migrator`.
+- `DATABASE_OPERATOR_URL` → `rckt_operator` (nueva). La CLI deja de usar `DATABASE_MIGRATION_URL`.
 - En desarrollo local, mantener `rckt` mientras no se aplique la migración, para no romper la base actual.
 
 ### 9.5 Pruebas de compatibilidad
@@ -480,7 +549,7 @@ apuntando a una base cuyo nombre termine en `_test`.
 
 ## 11. Dependencias y decisiones pendientes
 
-1. **Decidir el mecanismo del operador CLI** (§4.3): opciones A, B o C.
+1. **Mecanismo del operador CLI: resuelto** (§2.3). Pendientes para 2.7B2: la identidad humana del operador (R14) y la forma de las búsquedas de la CLI (§2.5).
 2. **Verificar en Lovable y en Supabase** los privilegios de `anon`, `authenticated` y `PUBLIC` (R3). Es la comprobación de
    mayor prioridad, y no la puedo hacer desde aquí.
 3. **Confirmar si el proyecto gestionado permite `CREATE ROLE`** y `ALTER DEFAULT PRIVILEGES`.
@@ -498,8 +567,7 @@ apuntando a una base cuyo nombre termine en `_test`.
 - `scripts/db_security_audit.py`: auditoría de solo lectura de catálogos. No escribe, no crea roles, no imprime URLs.
 - `scripts/security_poc/poc_policies.sql`: propuesta de roles, grants y políticas. **No es una migración.** Solo se aplica a
   una instancia desechable.
-- `scripts/security_poc/run_poc.py`: prueba de concepto de 37 comprobaciones. Se niega a ejecutarse fuera de `127.0.0.1` o
-  sobre una base que no termine en `_test`.
+- `scripts/security_poc/run_poc.py`: prueba de concepto de 37 comprobaciones. Se conecta solo a `127.0.0.1` y a la base `rckt_poc_test`; ambos valores son constantes del código, sin comprobación en tiempo de ejecución para otros valores. Requiere `POC_PORT`.
 
 Ninguna de estas piezas se ejecutó contra `rckt`, Lovable Cloud ni Supabase Cloud. La única base que recibió `CREATE ROLE`
 y políticas fue la instancia desechable, que se eliminó.
