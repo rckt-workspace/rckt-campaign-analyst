@@ -459,6 +459,7 @@ class AuditEvent(Base):
         CheckConstraint("length(btrim(resource_id)) > 0", name="resource_id_not_blank"),
         CheckConstraint("jsonb_typeof(metadata) = 'object'", name="metadata_is_object"),
         CheckConstraint("octet_length(metadata::text) <= 2048", name="metadata_size"),
+        CheckConstraint("source <> 'operator_cli' OR db_principal IS NOT NULL", name="operator_principal"),
         Index("ix_audit_events_organization_id_id", "organization_id", text("id DESC")),
     )
 
@@ -467,6 +468,8 @@ class AuditEvent(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     source: Mapped[str] = mapped_column(String(16), nullable=False)
     actor_user_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True)
+    # Database login that wrote the event (session_user). Set by the database, never by the application (migration 0009).
+    db_principal: Mapped[str | None] = mapped_column(String(63), nullable=True, server_default=text("session_user"))
     action: Mapped[str] = mapped_column(String(48), nullable=False)
     resource_type: Mapped[str] = mapped_column(String(48), nullable=False)
     resource_id: Mapped[str] = mapped_column(String(128), nullable=False)
