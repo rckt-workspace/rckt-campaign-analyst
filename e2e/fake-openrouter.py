@@ -19,7 +19,10 @@ REPORT = (Path(__file__).resolve().parents[1] / "backend" / "tests" / "fixtures"
 SLOW_SECONDS = 1.5
 SECRET_ERROR_DETAIL = b"upstream secret detail"
 
-state = {"mode": "ok", "calls": []}
+state = {"mode": "ok", "calls": [], "usage": "none"}
+# Usage the simulated provider reports, per test: "none" (no usage object, the default), "partial" (every other call
+# reports its cost), "complete" (every call reports its cost). The cost is a fixed test value, not a price.
+USAGE_COST = "0.00012345"
 lock = threading.Lock()
 
 
@@ -49,25 +52,35 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/__reset":
             with lock:
                 state["mode"] = "ok"
+                state["usage"] = "none"
                 state["calls"] = []
             return self._json(200, {"status": "reset"})
         if self.path == "/__control":
-            mode = self._body().get("mode")
-            if mode not in ("ok", "error", "slow"):
+            body = self._body()
+            mode = body.get("mode")
+            usage = body.get("usage")
+            if mode is not None and mode not in ("ok", "error", "slow"):
                 return self._json(400, {"detail": "invalid mode"})
+            if usage is not None and usage not in ("none", "partial", "complete"):
+                return self._json(400, {"detail": "invalid usage"})
             with lock:
-                state["mode"] = mode
-            return self._json(200, {"mode": mode})
+                if mode is not None:
+                    state["mode"] = mode
+                if usage is not None:
+                    state["usage"] = usage
+            return self._json(200, {"mode": state["mode"], "usage": state["usage"]})
         if self.path != "/api/v1/chat/completions":
             return self._json(404, {"detail": "not found"})
 
         body = self._body()
         with lock:
+            index = len(state["calls"])
             state["calls"].append({
                 "model": body.get("model"),
                 "hasAuthorization": bool(self.headers.get("Authorization", "").startswith("Bearer ")),
             })
             mode = state["mode"]
+            usage_mode = state["usage"]
 
         if mode == "error":
             self.send_response(500)
@@ -77,7 +90,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if mode == "slow":
             time.sleep(SLOW_SECONDS)
-        self._json(200, {"choices": [{"message": {"role": "assistant", "content": REPORT}, "finish_reason": "stop"}]})
+        payload = {"choices": [{"message": {"role": "assistant", "content": REPORT}, "finish_reason": "stop"}]}
+        reports_cost = usage_mode == "complete" or (usage_mode == "partial" and index % 2 == 0)
+        if usage_mode != "none":
+            payload["usage"] = {"prompt_tokens": 812, "completion_tokens": 430, "total_tokens": 1242}
+            if reports_cost:
+                payload["usage"]["cost"] = float(USAGE_COST)
+        self._json(200, payload)
 
     def log_message(self, *args):
         pass
