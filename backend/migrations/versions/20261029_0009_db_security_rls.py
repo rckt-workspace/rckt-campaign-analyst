@@ -54,7 +54,6 @@ STATEMENTS = (
             JOIN pg_namespace AS n ON n.oid = c.relnamespace
             WHERE n.nspname = 'public' AND c.relkind = 'r'
         LOOP
-            
             EXECUTE format('ALTER TABLE public.%I OWNER TO rckt_schema_owner', obj.name);
         END LOOP;
         FOR obj IN

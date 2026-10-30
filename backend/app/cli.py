@@ -7,7 +7,7 @@ login (session_user) in audit_events.db_principal, so each operator stays tracea
 
 Examples (DATABASE_OPERATOR_URL must point to the target database):
   python -m app.cli create-organization --name "Cliente Uno" --slug cliente-uno
-  python -m app.cli grant-membership --organization-slug cliente-uno --email ana@cliente.com --role analyst
+  python -m app.cli grant-membership --organization-slug cliente-uno --email ana@example.com --role analyst
   python -m app.cli grant-membership --organization-slug rckt-internal --email owner@example.com --role owner
   python -m app.cli set-analysis-quota --organization-slug cliente-uno --plan pilot --monthly-limit 50
 

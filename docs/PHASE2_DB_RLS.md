@@ -492,3 +492,11 @@ modificaron 0001–0008.
 6. Suite de negocio con propietario equivalente.
 7. Cloud y Supabase no verificados.
 8. Coste de RLS no medido con volumen real.
+
+### 13.11 Auditoría final de publicación
+
+- Commits de 2.7B2 sobre la base `9b0e53f`: **10** (no 4 ni 5). Lista exacta en el reporte de la sesión.
+- Espacio en blanco sobrante en la revisión 0009 (línea de comentario con sangría dentro de un bloque `DO`): corregido moviendo el comentario fuera del bloque. Se verificó que la única sentencia que cambia del bloque generado es esa línea en blanco.
+- Dominios de ejemplo en la CLI y sus pruebas: sustituidos por `example.com`. No se cambió ninguna aserción.
+- Verificador completo desde cero sobre la instancia etiquetada: 513 aprobadas, código de salida 0.
+- **Incidencia abierta.** En una primera ejecución completa sobre una instancia recién creada, una prueba de cuota por CLI (`test_a_quota_change_by_the_cli_records_the_previous_and_new_values`) falló con el mensaje genérico de rechazo. No se reprodujo en: su ejecución aislada, el archivo completo, el bloque de archivos anteriores, la suite completa sobre la misma base (513), ni un verificador completo posterior desde cero (513). La CLI oculta el mensaje del driver, así que la causa exacta no está confirmada. Queda documentada como riesgo a vigilar en CI y en la próxima ejecución limpia.

@@ -33,6 +33,7 @@ BEGIN
     END IF;
 END $$;
 
+-- Identity sequences follow their table (PostgreSQL refuses to change them directly), so only tables are listed below.
 -- --- Ownership: the schema first, then every object in it (run by the migrator, which owns them now) ----------------
 -- In PostgreSQL 15 and later public belongs to the database owner. The schema must belong to rckt_schema_owner before
 -- the objects are moved, because the new owner needs CREATE on the schema.
@@ -49,7 +50,6 @@ BEGIN
         JOIN pg_namespace AS n ON n.oid = c.relnamespace
         WHERE n.nspname = 'public' AND c.relkind = 'r'
     LOOP
-        -- Identity sequences follow their table: PostgreSQL refuses to change them directly.
         EXECUTE format('ALTER TABLE public.%I OWNER TO rckt_schema_owner', obj.name);
     END LOOP;
     FOR obj IN
