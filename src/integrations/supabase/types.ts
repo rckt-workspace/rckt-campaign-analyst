@@ -14,7 +14,249 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      app_users: {
+        Row: {
+          created_at: string
+          email: string | null
+          external_subject: string
+          id: string
+        }
+        Insert: {
+          created_at?: string
+          email?: string | null
+          external_subject: string
+          id?: string
+        }
+        Update: {
+          created_at?: string
+          email?: string | null
+          external_subject?: string
+          id?: string
+        }
+        Relationships: []
+      }
+      campaign_metric_entries: {
+        Row: {
+          campaign_id: string
+          clicks: number | null
+          conversions: number | null
+          cpc: number | null
+          cpl: number | null
+          created_at: string
+          created_by: string | null
+          ctr: number | null
+          frequency: number | null
+          id: string
+          impressions: number | null
+          investment: number | null
+          leads: number | null
+          organization_id: string
+          period_end: string | null
+          period_label: string | null
+          period_start: string | null
+          previous_metrics: Json
+          raw_input: string
+          reach: number | null
+          revenue: number | null
+          roas: number | null
+          source: string
+        }
+        Insert: {
+          campaign_id: string
+          clicks?: number | null
+          conversions?: number | null
+          cpc?: number | null
+          cpl?: number | null
+          created_at?: string
+          created_by?: string | null
+          ctr?: number | null
+          frequency?: number | null
+          id?: string
+          impressions?: number | null
+          investment?: number | null
+          leads?: number | null
+          organization_id: string
+          period_end?: string | null
+          period_label?: string | null
+          period_start?: string | null
+          previous_metrics?: Json
+          raw_input: string
+          reach?: number | null
+          revenue?: number | null
+          roas?: number | null
+          source: string
+        }
+        Update: {
+          campaign_id?: string
+          clicks?: number | null
+          conversions?: number | null
+          cpc?: number | null
+          cpl?: number | null
+          created_at?: string
+          created_by?: string | null
+          ctr?: number | null
+          frequency?: number | null
+          id?: string
+          impressions?: number | null
+          investment?: number | null
+          leads?: number | null
+          organization_id?: string
+          period_end?: string | null
+          period_label?: string | null
+          period_start?: string | null
+          previous_metrics?: Json
+          raw_input?: string
+          reach?: number | null
+          revenue?: number | null
+          roas?: number | null
+          source?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fk_campaign_metric_entries_campaign_scope"
+            columns: ["organization_id", "campaign_id"]
+            isOneToOne: false
+            referencedRelation: "campaigns"
+            referencedColumns: ["organization_id", "id"]
+          },
+          {
+            foreignKeyName: "fk_campaign_metric_entries_created_by"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      campaigns: {
+        Row: {
+          archived_at: string | null
+          channel: string | null
+          created_at: string
+          created_by: string | null
+          currency: string
+          id: string
+          name: string
+          objective: string | null
+          organization_id: string
+          period_end: string | null
+          period_label: string | null
+          period_start: string | null
+          updated_at: string
+        }
+        Insert: {
+          archived_at?: string | null
+          channel?: string | null
+          created_at?: string
+          created_by?: string | null
+          currency?: string
+          id?: string
+          name: string
+          objective?: string | null
+          organization_id: string
+          period_end?: string | null
+          period_label?: string | null
+          period_start?: string | null
+          updated_at?: string
+        }
+        Update: {
+          archived_at?: string | null
+          channel?: string | null
+          created_at?: string
+          created_by?: string | null
+          currency?: string
+          id?: string
+          name?: string
+          objective?: string | null
+          organization_id?: string
+          period_end?: string | null
+          period_label?: string | null
+          period_start?: string | null
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fk_campaigns_created_by"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "fk_campaigns_organization_id"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      organization_memberships: {
+        Row: {
+          created_at: string
+          id: string
+          organization_id: string
+          role: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          organization_id: string
+          role: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          organization_id?: string
+          role?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fk_organization_memberships_organization_id"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "fk_organization_memberships_user_id"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      organizations: {
+        Row: {
+          created_at: string
+          id: string
+          name: string
+          slug: string
+          status: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          name: string
+          slug: string
+          status?: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          name?: string
+          slug?: string
+          status?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
