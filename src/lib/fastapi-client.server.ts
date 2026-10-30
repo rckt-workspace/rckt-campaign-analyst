@@ -39,8 +39,18 @@ async function safeErrorCode(response: Response): Promise<string | null> {
   }
 }
 
+/**
+ * Accepts a full URL, or a bare "host:port" as Render's private-network reference (fromService, property hostport)
+ * produces. A bare value gets the http:// scheme; the private network carries no TLS between services.
+ */
+export function normalizeFastapiBaseUrl(configured: string | undefined): string {
+  const trimmed = (configured ?? "").trim().replace(/\/+$/, "");
+  const value = trimmed === "" ? DEFAULT_FASTAPI_URL : trimmed;
+  return /^https?:\/\//.test(value) ? value : `http://${value}`;
+}
+
 export function fastapiBaseUrl(): string {
-  return (process.env["FASTAPI_INTERNAL_URL"] ?? DEFAULT_FASTAPI_URL).replace(/\/+$/, "");
+  return normalizeFastapiBaseUrl(process.env["FASTAPI_INTERNAL_URL"]);
 }
 
 export async function fastapiRequest<T>(
