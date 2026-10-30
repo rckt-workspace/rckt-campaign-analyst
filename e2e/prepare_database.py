@@ -2,7 +2,8 @@
 
 Seeding uses the operator CLI (app.cli), exactly as an operator would. The E2E database name must end in _test,
 so this script can never touch the development or production database.
-Usage: E2E_DATABASE_URL=postgresql+asyncpg://user:pass@127.0.0.1:55432/rckt_e2e_test python e2e/prepare_database.py
+Usage: the four E2E_*_DATABASE_URL variables set (see .env.example), then: python e2e/prepare_database.py
+Procedure and limits: docs/staging-deploy.md, section "Pruebas E2E".
 """
 
 import asyncio
@@ -47,20 +48,26 @@ def admin_url(url: str) -> str:
     return urlunsplit((parts.scheme, parts.netloc, "/postgres", parts.query, ""))
 
 
-async def recreate_database(url: str) -> None:
-    name = database_name(url)
+MIGRATOR_ROLE = "rckt_migrator"
+
+
+async def recreate_database(admin: str) -> None:
+    """Drops and recreates the test database, owned by the migrator role (which must already exist: see
+    scripts/db_roles/provision_roles.sql). The administrative URL is used only for this step."""
+    name = database_name(admin)
     if not name.endswith("_test"):
         raise SystemExit("Refusing to recreate a database whose name does not end in _test")
-    engine = create_async_engine(admin_url(url), isolation_level="AUTOCOMMIT")
+    engine = create_async_engine(admin_url(admin), isolation_level="AUTOCOMMIT")
     try:
         async with engine.connect() as connection:
             await connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
-            await connection.execute(text(f'CREATE DATABASE "{name}"'))
+            await connection.execute(text(f'CREATE DATABASE "{name}" OWNER "{MIGRATOR_ROLE}"'))
     finally:
         await engine.dispose()
 
 
 def migrate(url: str) -> None:
+    """Applies migrations as rckt_migrator. This process never serves requests and never seeds data."""
     previous = os.environ.get("DATABASE_MIGRATION_URL")
     os.environ["DATABASE_MIGRATION_URL"] = url
     try:
@@ -74,8 +81,10 @@ def migrate(url: str) -> None:
             os.environ["DATABASE_MIGRATION_URL"] = previous
 
 
-def cli(url: str, *args: str) -> str:
-    environment = {**os.environ, "DATABASE_URL": url}
+def cli(operator: str, *args: str) -> str:
+    """Runs one operator procedure. The CLI reads only DATABASE_OPERATOR_URL (login of an rckt_operator member)."""
+    environment = {**os.environ, "DATABASE_OPERATOR_URL": operator}
+    environment.pop("DATABASE_URL", None)
     environment.pop("DATABASE_MIGRATION_URL", None)
     result = subprocess.run(
         [sys.executable, "-m", "app.cli", *args],
@@ -90,14 +99,14 @@ def cli(url: str, *args: str) -> str:
     return result.stdout.strip()
 
 
-def seed(url: str) -> None:
+def seed(operator: str) -> None:
     for organization in IDENTITIES["organizations"]:
-        cli(url, "create-organization", "--name", organization["name"], "--slug", organization["slug"])
+        cli(operator, "create-organization", "--name", organization["name"], "--slug", organization["slug"])
     for user in IDENTITIES["users"]:
-        cli(url, "provision-user", "--subject", user["subject"], "--email", user["email"])
+        cli(operator, "provision-user", "--subject", user["subject"], "--email", user["email"])
         for membership in user["memberships"]:
             cli(
-                url,
+                operator,
                 "grant-membership",
                 "--organization-slug", membership["organization"],
                 "--role", membership["role"],
@@ -105,14 +114,23 @@ def seed(url: str) -> None:
             )
 
 
+def require_test_url(name: str, value: str) -> str:
+    if not value.startswith("postgresql+asyncpg://") or not database_name(value).endswith("_test"):
+        raise SystemExit(f"{name} must be a postgresql+asyncpg:// URL of a database whose name ends in _test")
+    return value
+
+
 def main() -> None:
-    url = configured("E2E_DATABASE_URL")
-    if not url.startswith("postgresql+asyncpg://"):
-        raise SystemExit("Set E2E_DATABASE_URL to a postgresql+asyncpg:// URL of a database whose name ends in _test")
-    asyncio.run(recreate_database(url))
-    migrate(url)
-    seed(url)
-    print(f"end-to-end database '{database_name(url)}' prepared")
+    # Four identities, each for one purpose (docs/staging-deploy.md). None of them is the runtime login by accident.
+    admin = require_test_url("E2E_ADMIN_DATABASE_URL", configured("E2E_ADMIN_DATABASE_URL"))
+    migration = require_test_url("E2E_MIGRATION_DATABASE_URL", configured("E2E_MIGRATION_DATABASE_URL"))
+    operator = require_test_url("E2E_OPERATOR_DATABASE_URL", configured("E2E_OPERATOR_DATABASE_URL"))
+    app = require_test_url("E2E_APP_DATABASE_URL", configured("E2E_APP_DATABASE_URL"))
+    asyncio.run(recreate_database(admin))
+    migrate(migration)
+    seed(operator)
+    print(f"end-to-end database '{database_name(admin)}' prepared. The backend runs with E2E_APP_DATABASE_URL (rckt_app).")
+    del app  # validated above; the backend receives it through the Playwright environment, never through this script
 
 
 if __name__ == "__main__":

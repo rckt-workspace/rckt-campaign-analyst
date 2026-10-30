@@ -56,7 +56,7 @@ Estado de configuración de Supabase en este entorno: `SUPABASE_URL` vacía. El 
 5. **Forma de la llamada de análisis**: la server function recibía un argumento desenvuelto. Corregido.
 6. **Importaciones de servidor en el bundle cliente**: movidas dentro de los handlers, como el código original. Confirmado: ningún rastro de Supabase en el bundle del navegador.
 7. **Migraciones**: el preparador de la base E2E no encontraba el paquete `app`. Corregido.
-8. **`bun run` no pasa `.env` a procesos hijos**: el preparador y la configuración de Playwright leen `E2E_DATABASE_URL` del entorno o del `.env` del repositorio.
+8. **`bun run` no pasa `.env` a procesos hijos**: el preparador y la configuración de Playwright leen las variables `E2E_*_DATABASE_URL` del entorno o del `.env` del repositorio.
 9. **JSON en ESM**: `identities.json` se lee con `fs`, porque Node exige `type: json`.
 10. **Puerto 3100 ocupado por un contenedor del propio proyecto** de una verificación anterior: detenido antes de la ejecución E2E.
 

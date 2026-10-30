@@ -75,7 +75,7 @@ El análisis vive en `POST /api/v1/organizations/{organization_id}/analyses`. La
 | `SUPABASE_JWT_ISSUER` | Backend (opcional) | Por defecto `{SUPABASE_URL}/auth/v1`. |
 | `SUPABASE_JWT_AUDIENCE` | Backend (opcional) | Por defecto `authenticated`. |
 | `FASTAPI_INTERNAL_URL` | Frontend | Ya existente. |
-| `E2E_DATABASE_URL` | Solo pruebas E2E | Base cuyo nombre termina en `_test`. Se recrea en cada ejecución. |
+| `E2E_ADMIN_DATABASE_URL`, `E2E_MIGRATION_DATABASE_URL`, `E2E_OPERATOR_DATABASE_URL`, `E2E_APP_DATABASE_URL` | Solo pruebas E2E | Cuatro identidades, una por propósito. Base cuyo nombre termina en `_test`. Se recrea en cada ejecución. Ver `docs/staging-deploy.md`. |
 
 Ninguna de estas variables aparece en el bundle del navegador: el frontend las lee solo en el servidor.
 

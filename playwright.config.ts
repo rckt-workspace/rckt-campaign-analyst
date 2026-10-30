@@ -22,9 +22,10 @@ function configured(name: string): string {
   return line ? line.slice(name.length + 1).trim() : "";
 }
 
-const databaseUrl = configured("E2E_DATABASE_URL");
+// The backend runs with the application login (rckt_app), never with the administrative or migration login.
+const databaseUrl = configured("E2E_APP_DATABASE_URL");
 if (!databaseUrl) {
-  throw new Error("E2E_DATABASE_URL is required: a postgresql+asyncpg:// URL of a database whose name ends in _test");
+  throw new Error("E2E_APP_DATABASE_URL is required: a postgresql+asyncpg:// rckt_app URL of a database whose name ends in _test");
 }
 
 export default defineConfig({
