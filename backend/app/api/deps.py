@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AppUser
 from app.db.repositories import UserRepository
-from app.db.session import Database
+from app.db.session import Database, bind_identity, unbind_identity
 from app.security.tokens import AuthenticationError, AuthProviderUnavailableError, SupabaseTokenVerifier, VerifiedIdentity
 
 _bearer = HTTPBearer(auto_error=False)
@@ -25,15 +25,15 @@ def get_database(request: Request) -> Database:
     return database
 
 
-async def get_db_session(database: Database = Depends(get_database)) -> AsyncIterator[AsyncSession]:
-    async with database.session() as session:
-        yield session
-
-
 async def get_verified_identity(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
-) -> VerifiedIdentity:
+) -> AsyncIterator[VerifiedIdentity]:
+    """Verifies the bearer token and binds its subject for the whole request.
+
+    A yielding dependency: the binding is restored in the finally block when the request ends, whether it succeeded, failed
+    or was cancelled. A rejected token binds nothing (the exception is raised before the binding).
+    """
     if credentials is None or credentials.scheme.lower() != "bearer" or not credentials.credentials:
         raise HTTPException(status_code=401, detail="AUTHENTICATION_REQUIRED", headers={"WWW-Authenticate": "Bearer"})
 
@@ -42,11 +42,26 @@ async def get_verified_identity(
         # Fail closed: without configuration, nothing that needs identity is served.
         raise HTTPException(status_code=503, detail="authentication not configured")
     try:
-        return verifier.verify(credentials.credentials)
+        identity = verifier.verify(credentials.credentials)
     except AuthenticationError:
         raise HTTPException(status_code=401, detail="INVALID_TOKEN", headers={"WWW-Authenticate": "Bearer"}) from None
     except AuthProviderUnavailableError:
         raise HTTPException(status_code=503, detail="authentication unavailable") from None
+    token = bind_identity(identity.subject)
+    try:
+        yield identity
+    finally:
+        unbind_identity(token)
+
+
+async def get_db_session(
+    database: Database = Depends(get_database),
+    identity: VerifiedIdentity = Depends(get_verified_identity),
+) -> AsyncIterator[AsyncSession]:
+    # Depends on the verified identity, so the identity is bound before this session's first statement. A route that
+    # opens a session without a verified identity gets no business rows (row level security fails closed).
+    async with database.session() as session:
+        yield session
 
 
 async def get_current_user(

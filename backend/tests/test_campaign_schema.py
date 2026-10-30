@@ -123,7 +123,7 @@ async def _row(raw_engine, entry_id):  # type: ignore[no-untyped-def]
         return tuple(result.one())
 
 
-def test_campaign_tables_enable_row_level_security_without_policies(database, test_database_url):  # type: ignore[no-untyped-def]
+def test_campaign_tables_enable_row_level_security_and_no_policy_for_other_roles(database, test_database_url):  # type: ignore[no-untyped-def]
     async def state():  # type: ignore[no-untyped-def]
         from sqlalchemy.ext.asyncio import create_async_engine
         from sqlalchemy.pool import NullPool
@@ -137,9 +137,11 @@ def test_campaign_tables_enable_row_level_security_without_policies(database, te
                         " AND relname IN ('campaigns', 'campaign_metric_entries') ORDER BY relname"
                     )
                 )
-                policies = await connection.scalar(
-                    text("SELECT count(*) FROM pg_policies WHERE schemaname = 'public'")
-                )
+                # Migration 0009 adds policies for rckt_app only. Any policy for another role is a defect.
+                policies = await connection.scalar(text(
+                    "SELECT count(*) FROM pg_policies WHERE schemaname = 'public'"
+                    " AND roles IS DISTINCT FROM ARRAY['rckt_app']::name[]"
+                ))
                 return [tuple(row) for row in rls], policies
         finally:
             await engine.dispose()

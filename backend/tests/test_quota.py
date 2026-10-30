@@ -434,9 +434,8 @@ def db_period(raw_engine) -> date:  # type: ignore[no-untyped-def]
 # --- operator procedure -------------------------------------------------------------------------------------------
 
 @pytest.fixture
-def cli_env(monkeypatch, test_database_url, database):  # type: ignore[no-untyped-def]
-    monkeypatch.setenv("DATABASE_URL", test_database_url)
-    monkeypatch.delenv("DATABASE_MIGRATION_URL", raising=False)
+def cli_env(monkeypatch, operator_database_url, database):  # type: ignore[no-untyped-def]
+    monkeypatch.setenv("DATABASE_OPERATOR_URL", operator_database_url)
     return database
 
 

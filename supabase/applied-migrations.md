@@ -26,6 +26,9 @@ No editar historiales internos de Alembic, Drizzle ni Supabase CLI para corregir
 | `migrations/20261027000700_audit_events.sql` (Alembic `0008_audit_events`) | Desarrollo local (`rckt`) | pendiente | pendiente | pendiente | No aplicada. Auditoría append-only; ver `docs/PHASE2_AUDIT.md`. |
 | `migrations/20261027000700_audit_events.sql` (Alembic `0008_audit_events`) | Lovable Cloud | pendiente | pendiente de aprobación del responsable de RCKT | pendiente | No ejecutar. Revisar privilegios antes. |
 | `migrations/20261027000700_audit_events.sql` (Alembic `0008_audit_events`) | Supabase licenciado | pendiente | pendiente | pendiente | Futuro. |
+| `migrations/20261029000800_db_security_rls.sql` (Alembic `0009_db_security_rls`) | Desarrollo local (`rckt`) | pendiente | pendiente | pendiente | No aplicada. Requiere los roles de `scripts/db_roles/provision_roles.sql` antes, y transfiere la propiedad de los objetos. Ver `docs/PHASE2_DB_RLS.md`. |
+| `migrations/20261029000800_db_security_rls.sql` (Alembic `0009_db_security_rls`) | Lovable Cloud | pendiente | pendiente de aprobación del responsable de RCKT | pendiente | No ejecutar. Antes: verificar privilegios de `anon`, `authenticated` y `PUBLIC` (`PHASE2_DB_SECURITY.md` §10.3) y si el proyecto permite `CREATE ROLE` y `ALTER SCHEMA`. |
+| `migrations/20261029000800_db_security_rls.sql` (Alembic `0009_db_security_rls`) | Supabase licenciado | pendiente | pendiente | pendiente | Futuro. |
 
 ## Nota sobre el registro
 

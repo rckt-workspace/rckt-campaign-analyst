@@ -151,7 +151,10 @@ Derivados de `backend/app/cli.py` y de los repositorios que llama (`Organization
 PostgreSQL exige privilegio `UPDATE` para `SELECT ... FOR UPDATE` y para `ON CONFLICT DO UPDATE`. Es documentación del
 motor, no comprobado en esta fase.
 
-Grants consolidados de `rckt_operator`:
+> **Estado (2.7B2):** superada. El operador no recibe ningún privilegio sobre tablas. Sus cuatro comandos son funciones
+> `SECURITY DEFINER`; ver `PHASE2_DB_RLS.md` §2 (D1) y §6. La tabla siguiente es el diseño de 2.7B1, conservado como registro.
+
+Grants consolidados de `rckt_operator` (diseño de 2.7B1):
 
 | Tabla | Privilegios | Motivo |
 |---|---|---|
@@ -166,6 +169,9 @@ Denegados explícitamente, y verificables con la consulta de §10.3: `SUPERUSER`
 `TRUNCATE`, `DELETE`, `REFERENCES`, `TRIGGER`, `UPDATE` y `DELETE` sobre `audit_events`, y cualquier DDL.
 
 ### 2.5 Políticas propuestas para el operador (no probadas)
+
+> **Estado (2.7B2):** superada. Se eligió la alternativa 2 (funciones de búsqueda `SECURITY DEFINER`), y no hay políticas
+> para el operador. Ningún `USING (true)`. Ver `PHASE2_DB_RLS.md` §2.
 
 La prueba de concepto no incluyó políticas para `rckt_operator`. Estas son propuestas para 2.7B2:
 
@@ -189,6 +195,10 @@ dos caminos:
 **Recomendación: el camino 2.** No abre lectura masiva, y cumple los criterios de §5.7. Si se elige el 1, la excepción
 debe quedar registrada en el documento con su aprobación.
 
+> **Estado de implementación (2.7B2).** Las migraciones, roles, políticas y el contexto de identidad están implementados y
+> verificados en una instancia desechable. Ver `docs/PHASE2_DB_RLS.md`. Este documento conserva el diseño de 2.7B1 y las
+> notas de estado de cada sección que cambió.
+
 ## 3. Riesgos reales
 
 Gravedad: **Crítica** (acceso a datos de otras organizaciones o destrucción de datos, plausible hoy), **Alta** (pérdida de la
@@ -199,18 +209,18 @@ garantía de aislamiento o de integridad, requiere condiciones), **Media** (defe
 |---|---|---|---|
 | R1 | El rol de la aplicación es superusuario con `BYPASSRLS` y propietario de todas las tablas. Un fallo de una consulta o una credencial filtrada dan acceso a todas las organizaciones y a la auditoría | **Alta** | Verificado (auditoría) |
 | R2 | El propietario puede desactivar el disparador de `audit_events`, así que la inmutabilidad depende de que el rol de la aplicación no sea propietario | **Alta** | Verificado (la prueba de concepto muestra que el rol sin propiedad no puede; con propiedad sí, por definición) |
-| R3 | Si `anon` o `authenticated` tienen `TRUNCATE` o `DELETE` sobre tablas de negocio, RLS no lo impide: `TRUNCATE` no pasa por políticas | **Crítica si se confirma** | *No verificado*. Hipótesis por la configuración por defecto de Supabase |
+| R3 | `TRUNCATE` no está sujeto a políticas RLS: si `anon` o `authenticated` tuvieran `TRUNCATE` sobre tablas de negocio, ninguna política lo impediría. `DELETE` sí está sujeto a RLS, pero solo si el rol tiene el privilegio; el rol de aplicación no lo tiene | **Crítica si se confirma** | *No verificado* en Cloud. Hipótesis por la configuración por defecto de Supabase. Ver `PHASE2_DB_RLS.md` §9.2 |
 | R4 | El cliente generado de Lovable usa `service_role`, que salta RLS | **Media** | No importado hoy. Riesgo de importación accidental |
 | R5 | El aislamiento entre organizaciones descansa solo en la capa de aplicación (`require_role`), sin segunda barrera | **Alta** | Verificado (no hay políticas) |
-| R6 | `cli.py` usa `DATABASE_MIGRATION_URL` si existe, y `DATABASE_URL` si no: las operaciones administrativas heredan el rol de migraciones o de la aplicación | **Media** | Verificado en `cli.py`. Corrección en 2.7B2 |
+| R6 | La CLI usaba `DATABASE_MIGRATION_URL` si existía, y `DATABASE_URL` si no | **Media** | **Resuelto en 2.7B2**: la CLI usa solo `DATABASE_OPERATOR_URL` (`PHASE2_DB_RLS.md` D1) |
 | R7 | El contexto de identidad, si se implementa con variables de sesión, puede fijarlo cualquier código que tenga la credencial de `rckt_app` (§5.4) | **Media** | Limitación de diseño |
 | R8 | Si el contexto se fijara en modo sesión (`is_local = false`), se filtraría entre peticiones del pool | **Alta si ocurre** | Mitigado en la propuesta; la prueba de concepto lo demuestra (§7) |
 | R9 | Una política mal escrita (`USING (true)` o una recursión entre `organization_memberships` y `organizations`) abriría datos o rompería `GET /me` | **Alta** | Evitado por diseño y probado |
 | R10 | La reclamación atómica de cuotas depende de leer el límite en la misma transacción; si el rol no puede leer `analysis_quotas`, el consumo devuelve cero filas y se rechaza como si la cuota estuviera agotada | **Media** | Detectado en la prueba de concepto (§7.2) |
 | R11 | Los procesos internos sin usuario (ninguno hoy) no tendrían contexto y no verían datos | **Baja** | Sin procesos batch hoy; ver §5.5 |
 | R12 | `DATABASE_URL` y `DATABASE_MIGRATION_URL` pueden apuntar al mismo rol, lo que impide separar migraciones y ejecución | **Media** | Verificado en la configuración local |
-| R13 | `create-organization` y `provision-user` no generan eventos de auditoría | **Media** | Verificado en `cli.py` |
-| R14 | La persona que opera la CLI no queda registrada: todos los eventos `operator_cli` comparten el mismo rol y no tienen actor | **Media** | Verificado. Pendiente para 2.7B2 |
+| R13 | `create-organization` y `provision-user` no generan eventos de auditoría | **Media** | **Pendiente.** Requiere nuevas acciones en la lista de `audit_events` (un cambio de restricción en una migración nueva) |
+| R14 | La persona que opera la CLI no queda registrada: todos los eventos `operator_cli` comparten el mismo rol y no tienen actor | **Media** | **Resuelto en 2.7B2 por login**: `audit_events.db_principal` registra el login de base de datos de la persona (`PHASE2_DB_RLS.md` D3). Depende del procedimiento de alta de logins |
 
 ## 4. Arquitectura propuesta
 
@@ -567,7 +577,7 @@ apuntando a una base cuyo nombre termine en `_test`.
 - `scripts/db_security_audit.py`: auditoría de solo lectura de catálogos. No escribe, no crea roles, no imprime URLs.
 - `scripts/security_poc/poc_policies.sql`: propuesta de roles, grants y políticas. **No es una migración.** Solo se aplica a
   una instancia desechable.
-- `scripts/security_poc/run_poc.py`: prueba de concepto de 37 comprobaciones. Se conecta solo a `127.0.0.1` y a la base `rckt_poc_test`; ambos valores son constantes del código, sin comprobación en tiempo de ejecución para otros valores. Requiere `POC_PORT`.
+- `scripts/security_poc/run_poc.py`: **retirado en 2.7B2; se niega a ejecutarse.** Era la prueba de concepto de 37 comprobaciones de 2.7B1, sustituida por `run_rls_suite.py` con guardas de contenedor. Se conecta solo a `127.0.0.1` y a la base `rckt_poc_test`; ambos valores son constantes del código, sin comprobación en tiempo de ejecución para otros valores. Requiere `POC_PORT`.
 
 Ninguna de estas piezas se ejecutó contra `rckt`, Lovable Cloud ni Supabase Cloud. La única base que recibió `CREATE ROLE`
 y políticas fue la instancia desechable, que se eliminó.

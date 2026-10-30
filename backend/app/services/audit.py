@@ -12,10 +12,10 @@ from app.db.session import Database
 from app.domain.audit import AuditDraft
 
 
-async def record_event(database: Database, draft: AuditDraft) -> int:
+async def record_event(database: Database, draft: AuditDraft) -> None:
     """Commits one event. Raises if the database refuses it: the caller must not deliver the result then."""
     async with database.session() as session:
-        return await insert_audit_event(session, draft)
+        await insert_audit_event(session, draft)
 
 
 async def list_events(

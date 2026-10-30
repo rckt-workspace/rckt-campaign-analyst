@@ -1,4 +1,11 @@
-"""Proof of concept: least-privilege roles and identity-scoped RLS, on a disposable PostgreSQL instance only.
+"""HISTORICAL (Phase 2.7B1). This script is superseded and refuses to run.
+
+It dropped and created databases and roles by constant names, and it could not prove that its target
+was a disposable instance of this project. Phase 2.7B2 replaces it with scripts/security_poc/run_rls_suite.py,
+which verifies the container identity before any change. The code below is kept as the record of the 37-check
+proof of concept of 2.7B1; it is not run again.
+
+Proof of concept: least-privilege roles and identity-scoped RLS, on a disposable PostgreSQL instance only.
 
 Safety rules, enforced in code:
 - Connects only to 127.0.0.1 and to the database rckt_poc_test. Both values are constants in this file; the
@@ -326,4 +333,6 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    print("refused: superseded by scripts/security_poc/run_rls_suite.py; this script is not run again", file=sys.stderr)
+    raise SystemExit(2)
+    sys.exit(asyncio.run(main()))  # pragma: no cover  (historical)
