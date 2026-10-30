@@ -63,6 +63,8 @@ jobs:
     # Four identities, as in production: administration (creates the test database), migration, operator (CLI seeding)
     # and application (the backend). Throwaway CI passwords only; the service is destroyed with the job.
     env:
+      # Confirms that this service container is disposable and used by nothing else (see e2e/prepare_database.py).
+      E2E_DISPOSABLE_INSTANCE: yes-this-instance-is-disposable-and-exclusive
       E2E_ADMIN_DATABASE_URL: postgresql+asyncpg://rckt:ci-only-password@127.0.0.1:5432/rckt_e2e_test
       E2E_MIGRATION_DATABASE_URL: postgresql+asyncpg://rckt_migrator:ci-only-password@127.0.0.1:5432/rckt_e2e_test
       E2E_OPERATOR_DATABASE_URL: postgresql+asyncpg://rckt_operator_ci:ci-only-password@127.0.0.1:5432/rckt_e2e_test

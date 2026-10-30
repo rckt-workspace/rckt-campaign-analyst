@@ -1,54 +1,59 @@
-# PROPOSAL, NOT APPLIED. Blueprint for the staging environment on Render. Nothing here creates resources until a human
-# approves it in the Render dashboard (New > Blueprint). Plans marked "paid" incur cost. See docs/staging-deploy.md.
+# PROPOSAL, NOT APPLIED. Blueprint for the staging environment on Render (region virginia).
+# Nothing here creates resources until a human approves it in the Render dashboard (New > Blueprint).
+# Services marked PAID need approval: no paid service is authorized yet. See docs/staging-deploy.md, section 12.
 #
 # Decisions encoded here:
 # - The browser reaches only the frontend (public web service). FastAPI is a private service: no public port.
-# - The runtime database login is rckt_app, never the default owner-like user that Render creates. Every secret is
-#   sync: false, so its value is entered in the dashboard and never stored in this file.
-# - Migrations are NOT run by Render (no preDeployCommand): they run once, by an operator, with DATABASE_MIGRATION_URL.
+# - Render does not interpolate variables in a Blueprint, so the private address comes from fromService with
+#   property hostport ("host:port", no scheme). The frontend adds http:// (src/lib/fastapi-client.server.ts).
+# - The runtime database login is rckt_app, never the default user Render creates. DATABASE_URL is sync: false, so
+#   its value is entered by hand in the dashboard and never stored in this file.
+# - Migrations are NOT run by Render (no preDeployCommand): an operator runs them once with DATABASE_MIGRATION_URL.
 # - autoDeploy is off: a commit never deploys by itself.
-# - Verify the fields against the official Blueprint spec before applying: https://render.com/docs/yaml-spec
+# - Fields and values are checked against https://render.com/docs/yaml-spec. Items still to confirm in the dashboard
+#   before applying are listed in docs/staging-deploy.md, section 3.
 
 services:
-  # Public frontend (TanStack Start, Node server). Built from the root Dockerfile.
+  # Public frontend (TanStack Start, Node server). Built from the root Dockerfile. Listens on $PORT (set by Render).
   - type: web
     name: rckt-campaign-web
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    plan: starter # paid
-    region: frankfurt # decision pending: region of the database must match
+    plan: starter # PAID, not authorized
+    region: virginia
     autoDeploy: false
     healthCheckPath: /login
     envVars:
-      # Private address of the API, entered manually after the API exists: http://rckt-campaign-api:8000
-      # (Render private services are reachable by service name on the private network).
       - key: FASTAPI_INTERNAL_URL
-        sync: false
+        fromService:
+          type: pserv
+          name: rckt-campaign-api
+          property: hostport
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_PUBLISHABLE_KEY
         sync: false
 
-  # Private API (FastAPI). No public URL. Reachable only from services in the same Render environment.
+  # Private API (FastAPI). No public URL. Listens on $PORT (backend/Dockerfile), and only services of this
+  # environment can reach it.
   - type: pserv
     name: rckt-campaign-api
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
-    plan: starter # paid
-    region: frankfurt
+    plan: starter # PAID, not authorized
+    region: virginia
     autoDeploy: false
     envVars:
-      # Runtime login rckt_app. Set by hand. Never the database's default user.
+      # Runtime login rckt_app, set by hand. Never the default user Render creates for the database.
       - key: DATABASE_URL
         sync: false
-      # Lovable Auth (Supabase-compatible issuer). Verified only with the procedure in docs/staging-deploy.md.
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_JWT_AUDIENCE
         value: authenticated
-      # Model provider. Staging must not call the paid provider until the owner approves it.
+      # Model provider. Staging must not call the paid provider until the owner approves that spend.
       - key: OPENROUTER_API_KEY
         sync: false
       - key: OPENROUTER_BASE_URL
@@ -67,17 +72,19 @@ services:
         value: "1200"
       - key: CHAT_TIMEOUT_MS
         value: "45000"
-      # Quotas stay off until the owner decides (see docs/PHASE2_AUTH.md).
+      # Quotas stay off until the owner decides.
       - key: ANALYSIS_QUOTA_ENFORCED
         value: "false"
 
 databases:
-  # Managed PostgreSQL 16. The creator user is an administrator used only for provisioning the RCKT roles.
-  # Verify before applying: the platform user must be allowed to CREATE ROLE, or provision_roles.sql cannot run there.
+  # PostgreSQL 16, the version validated locally. The platform user created here is an administrator used only to
+  # provision the RCKT roles and run the migration; it is never the runtime login.
+  # Its privileges are NOT documented by Render: check them with \du before running provision_roles.sql.
   - name: rckt-campaign-db
     databaseName: rckt_staging
     postgresMajorVersion: "16"
-    plan: basic-256mb # paid
-    region: frankfurt
-    # Empty list: no connection from outside the Render network. Verify this field's behaviour in the spec.
+    plan: free # Free instance: Render's limits apply (see docs/staging-deploy.md, section 12). Not for data to keep.
+    region: virginia
+    # Empty list. Services of this environment still connect over the internal network. Confirm in the dashboard that
+    # external access is closed after applying (docs/staging-deploy.md, section 3).
     ipAllowList: []
